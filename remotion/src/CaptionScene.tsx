@@ -32,16 +32,18 @@ export const CaptionScene: React.FC<CaptionSceneProps> = ({ inputProps }) => {
     const lineStart = wordGroup[0].start;
     const lineEnd = wordGroup[wordGroup.length - 1].end;
 
-    // Check if the ENTIRE LINE is long enough for karaoke
-    // (not individual words, but the sum of all word durations)
+    // Calculate line duration
     const lineDurationMs = (lineEnd - lineStart) * 1000;
-    const isKaraokeEnabled = lineDurationMs >= MIN_WORD_DURATION_FOR_KARAOKE_MS;
+
+    // Drop animation and karaoke are always together
+    // Only enable if line is long enough for both effects to look good
+    const enableEffects = lineDurationMs >= MIN_WORD_DURATION_FOR_KARAOKE_MS;
 
     return {
       words: wordGroup,
       lineStart,
       lineEnd,
-      isKaraokeEnabled,
+      enableEffects, // Single flag for both drop and karaoke
       startFrame: Math.floor(lineStart * fps),
       endFrame: Math.floor(lineEnd * fps),
     };
@@ -56,7 +58,7 @@ export const CaptionScene: React.FC<CaptionSceneProps> = ({ inputProps }) => {
           words,
           lineStart,
           lineEnd,
-          isKaraokeEnabled,
+          enableEffects,
         } = group;
 
         // Only render if this line is active
@@ -64,24 +66,27 @@ export const CaptionScene: React.FC<CaptionSceneProps> = ({ inputProps }) => {
           return null;
         }
 
-        // Calculate drop animation
-        const animationDurationFrames = Math.floor(
-          (ANIMATION_DURATION_MS / 1000) * fps
-        );
-        const animationProgress = Math.min(
-          1,
-          (frame - startFrame) / animationDurationFrames
-        );
+        // Calculate drop animation (only if effects are enabled)
+        let currentY = baselineY;
+        if (enableEffects) {
+          const animationDurationFrames = Math.floor(
+            (ANIMATION_DURATION_MS / 1000) * fps
+          );
+          const animationProgress = Math.min(
+            1,
+            (frame - startFrame) / animationDurationFrames
+          );
 
-        const currentY = interpolate(
-          animationProgress,
-          [0, 1],
-          [baselineY - DROP_DISTANCE, baselineY],
-          {
-            extrapolateRight: "clamp",
-            easing: Easing.out(Easing.cubic), // More dramatic: fast start, smooth ease into final position
-          }
-        );
+          currentY = interpolate(
+            animationProgress,
+            [0, 1],
+            [baselineY - DROP_DISTANCE, baselineY],
+            {
+              extrapolateRight: "clamp",
+              easing: Easing.out(Easing.cubic), // Fast start, smooth ease into final position
+            }
+          );
+        }
 
         // Calculate word positions (0 = leftmost, 1 = rightmost)
         // We'll use a simple approach: divide the line into equal segments
@@ -106,7 +111,7 @@ export const CaptionScene: React.FC<CaptionSceneProps> = ({ inputProps }) => {
                   key={wordIndex}
                   word={word}
                   lineStartFrame={startFrame}
-                  isKaraokeEnabled={isKaraokeEnabled}
+                  isKaraokeEnabled={enableEffects}
                   wordPositionRatio={wordPositionRatio}
                   lineEndTime={lineEnd}
                 />
