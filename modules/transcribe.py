@@ -1,3 +1,5 @@
+import json
+
 try:
     from .common import StageEnvironment, build_cli_parser
 except ImportError:
@@ -12,15 +14,14 @@ def run(args):
         - Requires ffmpeg for audio extraction.
     Failure behaviour:
         - Aborts when no video is found or when multiple video candidates are present.
-        - Prompts before overwriting an existing SRT file unless `--yes` is supplied.
+        - Prompts before overwriting an existing JSON file unless `--yes` is supplied.
     Output:
-        - Produces `<video_basename>.srt`, sharing the exact basename with the video but
-          switching the extension to `.srt`.
-        - SRT contains word-level timestamps suitable for karaoke-style captions.
+        - Produces `<video_basename>.json`, containing word-level timestamps.
+        - Format: [{"word": "text", "start": 0.0, "end": 0.5}, ...]
     """
     parser = build_cli_parser(
-        stage="srt",
-        summary="Generate word-level SRT subtitle file from a video using stable-ts.",
+        stage="transcribe",
+        summary="Generate word-level timestamps from a video using stable-ts.",
     )
     parser.add_argument(
         "--model",
@@ -32,7 +33,7 @@ def run(args):
     parsed = parser.parse_args(args)
 
     env = StageEnvironment.create(
-        stage="srt",
+        stage="transcribe",
         directory=parsed.dir,
         auto_confirm=parsed.yes,
     )
@@ -71,16 +72,16 @@ def run(args):
         video_file = tight_videos[0]
     else:
         video_file = video_files[0]
-    srt_file = video_file.with_suffix(".srt")
+    json_file = video_file.with_suffix(".json")
 
-    env.ensure_output_path(srt_file)
+    env.ensure_output_path(json_file)
     env.announce_checks_passed(
-        f"All safety checks passed. Ready to generate word-level subtitles '{srt_file.name}' "
+        f"All safety checks passed. Ready to generate word-level timestamps '{json_file.name}' "
         f"from '{video_file.name}' using model '{parsed.model}'."
     )
 
-    # Generate word-level SRT using stable-ts
-    print(f"🎙️  post -srt: transcribing audio with stable-ts (model: {parsed.model})...")
+    # Generate word-level timestamps using stable-ts
+    print(f"🎙️  post -transcribe: transcribing audio with stable-ts (model: {parsed.model})...")
     try:
         import stable_whisper
     except ImportError:
@@ -91,18 +92,30 @@ def run(args):
 
     try:
         # Load the model
-        print(f"📦 post -srt: loading Whisper model '{parsed.model}'...")
+        print(f"📦 post -transcribe: loading Whisper model '{parsed.model}'...")
         model = stable_whisper.load_model(parsed.model)
 
         # Transcribe with word-level timestamps
-        print(f"🔊 post -srt: processing audio from '{video_file.name}'...")
+        print(f"🔊 post -transcribe: processing audio from '{video_file.name}'...")
         result = model.transcribe(str(video_file), word_timestamps=True)
 
-        # Export to SRT with word-level timing
-        print(f"💾 post -srt: writing word-level SRT to '{srt_file.name}'...")
-        result.to_srt_vtt(str(srt_file), word_level=True)
+        # Extract words with timestamps
+        print(f"💾 post -transcribe: extracting word-level timestamps to '{json_file.name}'...")
+        words = []
+        for segment in result.segments:
+            for word in segment.words:
+                words.append({
+                    'word': word.word.strip(),
+                    'start': word.start,
+                    'end': word.end
+                })
+        
+        # Write to JSON
+        with open(json_file, 'w', encoding='utf-8') as f:
+            json.dump(words, f, indent=2, ensure_ascii=False)
 
-        print(f"✅ post -srt: successfully generated '{srt_file.name}' with word-level timestamps!")
+        print(f"✅ post -transcribe: successfully generated '{json_file.name}' with {len(words)} words!")
 
     except Exception as e:
-        env.abort(f"Failed to generate SRT: {e}")
+        env.abort(f"Failed to generate timestamps: {e}")
+

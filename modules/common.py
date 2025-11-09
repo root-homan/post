@@ -1,6 +1,8 @@
 import argparse
+import os
 from dataclasses import dataclass
 from pathlib import Path
+from openai import OpenAI
 
 
 def build_cli_parser(stage: str, summary: str) -> argparse.ArgumentParser:
@@ -101,5 +103,56 @@ class StageEnvironment:
 
     def announce_checks_passed(self, details: str) -> None:
         print(f"🔍 post -{self.stage}: {details}")
+
+
+def call_gpt5(system_prompt: str, user_prompt: str, response_format=None, model: str = "gpt-5") -> str:
+    """
+    Common function to call GPT-5 API.
+    
+    Parameters
+    ----------
+    system_prompt:
+        The system message to set the context/instructions.
+    user_prompt:
+        The user message with the content to process.
+    response_format:
+        Optional response format specification (e.g., {"type": "json_object"}).
+    model:
+        The model to use (default: "gpt-5"). Can be "gpt-5-mini" for faster/cheaper responses.
+        
+    Returns
+    -------
+    str:
+        The response content from GPT-5.
+        
+    Raises
+    ------
+    SystemExit:
+        If OPENAI_API_KEY is not set or API call fails.
+    """
+    api_key = os.getenv("OPENAI_API_KEY")
+    if not api_key:
+        print("❌ OPENAI_API_KEY environment variable is not set.")
+        raise SystemExit(1)
+    
+    try:
+        client = OpenAI(api_key=api_key)
+        kwargs = {
+            "model": model,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt}
+            ]
+        }
+        
+        if response_format:
+            kwargs["response_format"] = response_format
+        
+        response = client.chat.completions.create(**kwargs)
+        return response.choices[0].message.content
+        
+    except Exception as e:
+        print(f"❌ OpenAI API call failed: {e}")
+        raise SystemExit(1)
 
 
