@@ -1,6 +1,7 @@
 import React from "react";
 import {
   AbsoluteFill,
+  Easing,
   interpolate,
   useCurrentFrame,
   useVideoConfig,
@@ -12,8 +13,8 @@ interface CaptionSceneProps {
   inputProps: CaptionData;
 }
 
-const DROP_DISTANCE = 8; // pixels
-const ANIMATION_DURATION_MS = 300;
+const DROP_DISTANCE = 6; // pixels
+const ANIMATION_DURATION_MS = 400;
 const MIN_WORD_DURATION_FOR_KARAOKE_MS = 500; // Lower threshold - more lines get karaoke
 
 export const CaptionScene: React.FC<CaptionSceneProps> = ({ inputProps }) => {
@@ -23,7 +24,7 @@ export const CaptionScene: React.FC<CaptionSceneProps> = ({ inputProps }) => {
   const { groups, videoHeight } = inputProps;
 
   // Calculate margin (15% from bottom, matching the Python code)
-  const marginV = Math.floor(videoHeight * 0.15);
+  const marginV = Math.floor(videoHeight * 0.27);
   const baselineY = videoHeight - marginV;
 
   // Process groups to calculate timing
@@ -76,8 +77,15 @@ export const CaptionScene: React.FC<CaptionSceneProps> = ({ inputProps }) => {
           animationProgress,
           [0, 1],
           [baselineY - DROP_DISTANCE, baselineY],
-          { extrapolateRight: "clamp" }
+          {
+            extrapolateRight: "clamp",
+            easing: Easing.out(Easing.cubic), // More dramatic: fast start, smooth ease into final position
+          }
         );
+
+        // Calculate word positions (0 = leftmost, 1 = rightmost)
+        // We'll use a simple approach: divide the line into equal segments
+        const wordCount = words.length;
 
         return (
           <div
@@ -87,14 +95,23 @@ export const CaptionScene: React.FC<CaptionSceneProps> = ({ inputProps }) => {
               top: currentY,
             }}
           >
-            {words.map((word, wordIndex) => (
-              <Word
-                key={wordIndex}
-                word={word}
-                lineStartFrame={startFrame}
-                isKaraokeEnabled={isKaraokeEnabled}
-              />
-            ))}
+            {words.map((word, wordIndex) => {
+              // Calculate position ratio for this word
+              // Add 0.5 to center each word in its segment
+              const wordPositionRatio =
+                wordCount > 1 ? (wordIndex + 0.5) / wordCount : 0.5;
+
+              return (
+                <Word
+                  key={wordIndex}
+                  word={word}
+                  lineStartFrame={startFrame}
+                  isKaraokeEnabled={isKaraokeEnabled}
+                  wordPositionRatio={wordPositionRatio}
+                  lineEndTime={lineEnd}
+                />
+              );
+            })}
           </div>
         );
       })}
