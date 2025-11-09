@@ -1,0 +1,8 @@
+node_modules/
+dist/
+out/
+.remotion/
+caption-props.json
+*.log
+.DS_Store
+

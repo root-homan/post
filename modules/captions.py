@@ -1,5 +1,6 @@
 import subprocess
 import json
+import shutil
 from pathlib import Path
 
 try:
@@ -119,13 +120,57 @@ def group_words_into_lines(words):
         return lines
 
 
-def format_ass_time(seconds):
-    """Convert seconds (float) to ASS timestamp format: H:MM:SS.CC"""
-    hours = int(seconds // 3600)
-    minutes = int((seconds % 3600) // 60)
-    secs = int(seconds % 60)
-    centisecs = int((seconds % 1) * 100)
-    return f"{hours}:{minutes:02d}:{secs:02d}.{centisecs:02d}"
+def get_video_info(video_path: Path):
+    """
+    Get video dimensions, fps, and duration using ffprobe.
+    
+    Returns:
+        dict with keys: width, height, fps, duration
+    """
+    try:
+        # Get dimensions and fps
+        probe_cmd = [
+            'ffprobe',
+            '-v', 'error',
+            '-select_streams', 'v:0',
+            '-show_entries', 'stream=width,height,r_frame_rate,duration',
+            '-of', 'json',
+            str(video_path)
+        ]
+        result = subprocess.run(probe_cmd, check=True, capture_output=True, text=True)
+        data = json.loads(result.stdout)
+        stream = data['streams'][0]
+        
+        width = int(stream['width'])
+        height = int(stream['height'])
+        
+        # Parse fps (it's in format "30/1" or "30000/1001")
+        fps_parts = stream['r_frame_rate'].split('/')
+        fps = int(fps_parts[0]) / int(fps_parts[1])
+        
+        # Get duration (might be in stream or format)
+        duration = float(stream.get('duration', 0))
+        if duration == 0:
+            # Try format duration
+            format_probe = [
+                'ffprobe',
+                '-v', 'error',
+                '-show_entries', 'format=duration',
+                '-of', 'json',
+                str(video_path)
+            ]
+            result = subprocess.run(format_probe, check=True, capture_output=True, text=True)
+            data = json.loads(result.stdout)
+            duration = float(data['format']['duration'])
+        
+        return {
+            'width': width,
+            'height': height,
+            'fps': fps,
+            'duration': duration
+        }
+    except Exception as e:
+        raise RuntimeError(f"Failed to get video info: {e}")
 
 
 def save_grouping(grouping_path: Path, lines):
@@ -157,131 +202,119 @@ def load_grouping(grouping_path: Path):
     return data.get("groups", [])
 
 
-def generate_ass_file(json_path: Path, ass_path: Path, video_width=2880, video_height=2160, lines=None):
+def render_captions_with_remotion(
+    grouping_path: Path,
+    output_video: Path,
+    video_width: int,
+    video_height: int,
+    fps: float,
+    duration: float
+):
     """
-    Generate an ASS subtitle file with karaoke-style word highlighting and drop-in animation.
-    
-    Style specs:
-    - 96px SF Pro Medium font
-    - White color
-    - Bottom center position
-    - 20% up from bottom (margin = 20% of height)
-    - Animation: Each word drops in from above when it's time to be spoken
+    Render captions using Remotion.
     
     Args:
-        json_path: Path to the word timestamps JSON file
-        ass_path: Path to write the ASS file
+        grouping_path: Path to the grouping JSON file
+        output_video: Path to write the caption video
         video_width: Video width in pixels
         video_height: Video height in pixels
-        lines: Optional pre-computed grouping. If None, will generate new grouping.
+        fps: Frames per second
+        duration: Duration in seconds
     """
-    words = load_words_from_json(json_path)
+    # Get the remotion directory
+    remotion_dir = Path(__file__).parent.parent / "remotion"
     
-    # Use provided grouping or generate new one
-    if lines is None:
-        lines = group_words_into_lines(words)
+    if not remotion_dir.exists():
+        raise RuntimeError(f"Remotion directory not found at '{remotion_dir}'")
     
-    # Calculate margin (20% from bottom)
-    margin_v = int(video_height * 0.15)
+    # Check if node_modules exists, if not, install dependencies
+    node_modules = remotion_dir / "node_modules"
+    if not node_modules.exists():
+        print("📦 Installing Remotion dependencies (first time only)...")
+        try:
+            subprocess.run(
+                ["npm", "install"],
+                cwd=remotion_dir,
+                check=True,
+                capture_output=True
+            )
+            print("✅ Dependencies installed!")
+        except subprocess.CalledProcessError as e:
+            raise RuntimeError(f"Failed to install npm dependencies: {e}")
     
-    # ASS file header
-    ass_content = [
-        "[Script Info]",
-        "ScriptType: v4.00+",
-        "PlayResX: " + str(video_width),
-        "PlayResY: " + str(video_height),
-        "WrapStyle: 0",
-        "",
-        "[V4+ Styles]",
-        "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding",
-        # Style with SF Pro Medium font - no outline, no shadow. We control opacity via inline tags.
-        # Colors in ASS are &HAABBGGRR where AA is alpha (00=opaque, FF=transparent)
-        f"Style: Default,SF Pro Medium,96,&H00FFFFFF,&H00FFFFFF,&H00000000,&H80000000,0,0,0,0,100,100,0,0,1,0,0,2,20,20,{margin_v},1",
-        "",
-        "[Events]",
-        "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
-    ]
+    # Load the grouping data
+    with open(grouping_path, 'r', encoding='utf-8') as f:
+        grouping_data = json.load(f)
     
-    # Animation parameters - adjust these for different visual effects
-    DROP_DISTANCE = 8  # pixels: how far the line drops from above (lower = more subtle)
-    ANIMATION_DURATION = 64  # milliseconds: how long the drop animation takes
-    MIN_WORD_DURATION_FOR_KARAOKE = 200  # milliseconds: minimum word duration to do opacity animation
-    KARAOKE_FADE_BACK = 80  # milliseconds: how quickly words return to the inactive opacity
- 
-    # Generate events for each line with entire line dropping together
-    for line_words in lines:
-        if not line_words:
-            continue
- 
-        line_start = line_words[0]['start']
-        line_end = line_words[-1]['end']
- 
-        # Calculate positions
-        center_x = video_width // 2
-        baseline_y = video_height - margin_v
- 
-        # Starting position (above) and ending position for the drop animation
-        start_y = baseline_y - DROP_DISTANCE
-        end_y = baseline_y
- 
-        # Check if we should do karaoke effect (opacity transitions)
-        # Only if words are long enough
-        use_karaoke = all(
-            (word['end'] - word['start']) * 1000 >= MIN_WORD_DURATION_FOR_KARAOKE 
-            for word in line_words
+    # Prepare props for Remotion
+    # Note: Must match the structure expected by CaptionScene component
+    duration_in_frames = int(duration * fps)
+    remotion_props = {
+        "inputProps": {
+            "groups": grouping_data["groups"],
+            "videoWidth": video_width,
+            "videoHeight": video_height,
+            "fps": fps,
+            "durationInFrames": duration_in_frames
+        }
+    }
+    
+    # Write props to a temporary file
+    props_file = remotion_dir / "caption-props.json"
+    with open(props_file, 'w', encoding='utf-8') as f:
+        json.dump(remotion_props, f)
+    
+    print(f"🎬 Rendering captions with Remotion ({duration_in_frames} frames at {fps} fps)...")
+    
+    # Call Remotion CLI to render
+    # Note: Remotion adds the extension automatically based on codec, so we pass path without extension
+    output_without_ext = output_video.with_suffix('')
+    
+    try:
+        cmd = [
+            "npx",
+            "remotion", "render",
+            "CaptionScene",
+            str(output_without_ext),
+            "--props", str(props_file),
+            "--codec", "prores",  # Use ProRes for transparency support
+            "--prores-profile", "4444",  # 4444 profile supports alpha channel
+            "--pixel-format", "yuva444p10le",  # Ensure alpha channel is preserved
+        ]
+        
+        subprocess.run(
+            cmd,
+            cwd=remotion_dir,
+            check=True,
+            capture_output=False
         )
- 
-        line_duration_ms = max(1, int((line_end - line_start) * 1000))
-
-        if use_karaoke:
-            # Build per-word opacity animations using \t transforms
-            segments = []
-
-            for word in line_words:
-                word_text = word['word']
-                highlight_start = max(0, int((word['start'] - line_start) * 1000))
-                highlight_end = max(highlight_start + 1, int((word['end'] - line_start) * 1000))
-                fade_back_end = min(highlight_end + KARAOKE_FADE_BACK, line_duration_ms)
-
-                segment = (
-                    "{\\alpha&H4D&"
-                    f"\\t({highlight_start},{highlight_end},\\alpha&H00&)"
-                    f"\\t({highlight_end},{fade_back_end},\\alpha&H4D&)"
-                    f"}}{word_text}"
-                )
-                segments.append(segment)
-
-            full_text = " ".join(segments)
-            anim_text = f"{{\\move({center_x},{start_y},{center_x},{end_y},0,{ANIMATION_DURATION})}}{full_text}"
-            ass_content.append(
-                f"Dialogue: 0,{format_ass_time(line_start)},{format_ass_time(line_end)},Default,,0,0,0,,{anim_text}"
-            )
-        else:
-            # No karaoke - show all words at full opacity
-            full_text = " ".join([word['word'] for word in line_words])
-            anim_text = f"{{\\move({center_x},{start_y},{center_x},{end_y},0,{ANIMATION_DURATION})\\alpha&H00&}}{full_text}"
-            ass_content.append(
-                f"Dialogue: 0,{format_ass_time(line_start)},{format_ass_time(line_end)},Default,,0,0,0,,{anim_text}"
-            )
- 
-    # Write ASS file
-    with open(ass_path, 'w', encoding='utf-8') as f:
-        f.write('\n'.join(ass_content))
+        
+        # Remotion will create the file with .mov extension automatically
+        # Check if it exists and rename if needed to match our expected path
+        remotion_output = Path(str(output_without_ext) + '.mov')
+        if remotion_output.exists() and remotion_output != output_video:
+            remotion_output.rename(output_video)
+        
+        # Clean up props file
+        props_file.unlink()
+        
+        print(f"✅ Caption video rendered successfully!")
+        
+    except subprocess.CalledProcessError as e:
+        raise RuntimeError(f"Remotion render failed: {e}")
 
 
-def burn_subtitles(video_path: Path, ass_path: Path, output_path: Path):
+def overlay_captions(video_path: Path, caption_video_path: Path, output_path: Path):
     """
-    Use ffmpeg to burn ASS subtitles onto the video.
+    Use ffmpeg to overlay the caption video (with transparency) onto the main video.
     """
-    # Escape the ASS path for ffmpeg filter
-    # On Windows, we need to escape backslashes and colons differently
-    ass_path_str = str(ass_path).replace('\\', '/').replace(':', '\\:')
-    
     cmd = [
         'ffmpeg',
-        '-i', str(video_path),
-        '-vf', f"ass='{ass_path_str}'",
+        '-i', str(video_path),  # Main video
+        '-i', str(caption_video_path),  # Caption video with alpha
+        '-filter_complex', '[0:v][1:v]overlay=format=auto',  # Overlay with alpha channel support
         '-c:a', 'copy',  # Copy audio without re-encoding
+        '-pix_fmt', 'yuv420p',  # Ensure output is in standard format
         '-y',  # Overwrite output file
         str(output_path)
     ]
@@ -289,7 +322,7 @@ def burn_subtitles(video_path: Path, ass_path: Path, output_path: Path):
     try:
         subprocess.run(cmd, check=True, capture_output=False)
     except subprocess.CalledProcessError as e:
-        raise RuntimeError(f"ffmpeg failed: {e}")
+        raise RuntimeError(f"ffmpeg overlay failed: {e}")
 
 
 def run(args):
@@ -298,16 +331,17 @@ def run(args):
         - A tightened video `<title>-<take_id>-rough-tight.mp4` must be present in the working directory.
         - A matching word timestamps file `<title>-<take_id>-rough-tight.json` (same basename as the video) must exist.
         - ffmpeg must be installed and available in PATH.
+        - Node.js and npm must be installed (for Remotion).
     Failure behaviour:
         - Aborts when either artefact is missing, when multiple candidates exist, or when the basenames differ.
         - Prompts before overwriting `<title>-<take_id>-rough-tight-captions.mp4` unless `--yes` is provided.
     Output:
-        - Produces `<title>-<take_id>-rough-tight-captions.mp4`, augmenting the tightened video with burnt-in captions.
-        - Also produces an intermediate `<title>-<take_id>-rough-tight.ass` file with karaoke-style subtitles.
+        - Produces `<title>-<take_id>-rough-tight-captions.mp4`, augmenting the tightened video with rendered captions.
+        - Also produces an intermediate `<title>-<take_id>-rough-tight-captions-only.mov` (ProRes with alpha) containing just the captions.
         - Also produces `<title>-<take_id>-rough-tight-grouping.json` containing the word grouping for reuse.
     Grouping workflow:
         - If a grouping file exists, prompts whether to reuse it (unless `--yes` is provided, which auto-reuses).
-        - This allows regenerating the .ass file with different styling without re-running GPT grouping.
+        - This allows regenerating captions with different styling without re-running GPT grouping.
         - To force new grouping: delete the grouping file or respond 'n' to the prompt.
     """
     parser = build_cli_parser(
@@ -332,7 +366,7 @@ def run(args):
         )
 
     captions_video = tightened_video.with_name(f"{tightened_video.stem}-captions.mp4")
-    ass_file = tightened_video.with_suffix(".ass")
+    caption_only_video = tightened_video.with_name(f"{tightened_video.stem}-captions-only.mov")
     grouping_file = tightened_video.with_name(f"{tightened_video.stem}-grouping.json")
 
     env.ensure_output_path(captions_video)
@@ -340,23 +374,12 @@ def run(args):
         f"All safety checks passed. Ready to render '{captions_video.name}' using '{tightened_video.name}' and '{json_file.name}'."
     )
 
-    # Get video dimensions for proper subtitle positioning
+    # Get video info (dimensions, fps, duration)
     try:
-        probe_cmd = [
-            'ffprobe',
-            '-v', 'error',
-            '-select_streams', 'v:0',
-            '-show_entries', 'stream=width,height',
-            '-of', 'csv=s=x:p=0',
-            str(tightened_video)
-        ]
-        result = subprocess.run(probe_cmd, check=True, capture_output=True, text=True)
-        dimensions = result.stdout.strip().split('x')
-        video_width = int(dimensions[0])
-        video_height = int(dimensions[1])
-        print(f"📐 Detected video dimensions: {video_width}x{video_height}")
+        video_info = get_video_info(tightened_video)
+        print(f"📐 Video info: {video_info['width']}x{video_info['height']}, {video_info['fps']:.2f} fps, {video_info['duration']:.2f}s")
     except Exception as e:
-        env.abort(f"Failed to get video dimensions: {e}")
+        env.abort(f"Failed to get video info: {e}")
 
     # Step 1: Handle word grouping (separate from ASS generation)
     lines = None
@@ -389,19 +412,26 @@ def run(args):
         # Save the grouping for future reuse
         save_grouping(grouping_file, lines)
 
-    # Step 2: Generate ASS file from grouping
-    print(f"📝 post -captions: generating ASS subtitle file '{ass_file.name}' with karaoke-style timing...")
+    # Step 2: Render captions with Remotion
+    print(f"🎬 post -captions: rendering captions with Remotion...")
     try:
-        generate_ass_file(json_file, ass_file, video_width, video_height, lines=lines)
-        print(f"✅ post -captions: ASS file generated successfully!")
+        render_captions_with_remotion(
+            grouping_file,
+            caption_only_video,
+            video_info['width'],
+            video_info['height'],
+            video_info['fps'],
+            video_info['duration']
+        )
+        print(f"✅ post -captions: caption video rendered successfully!")
     except Exception as e:
-        env.abort(f"Failed to generate ASS file: {e}")
+        env.abort(f"Failed to render captions: {e}")
 
-    # Step 3: Burn subtitles onto video
-    print(f"🎬 post -captions: burning subtitles onto video...")
+    # Step 3: Overlay captions onto main video
+    print(f"🎬 post -captions: overlaying captions onto video...")
     try:
-        burn_subtitles(tightened_video, ass_file, captions_video)
-        print(f"✅ post -captions: successfully created '{captions_video.name}' with burnt-in captions!")
+        overlay_captions(tightened_video, caption_only_video, captions_video)
+        print(f"✅ post -captions: successfully created '{captions_video.name}' with captions!")
     except Exception as e:
-        env.abort(f"Failed to burn subtitles: {e}")
+        env.abort(f"Failed to overlay captions: {e}")
 
