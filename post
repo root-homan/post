@@ -13,6 +13,7 @@ def main():
     if len(sys.argv) < 2:
         print("Usage: post -<command> [args...]")
         print("\nAvailable commands:")
+        print("  -process     Run full pipeline: tighten → transcribe → essay → captions")
         print("  -cut         Extract and process video cuts")
         print("  -tighten     Remove silence from video")
         print("  -transcribe  Generate word-level timestamps")

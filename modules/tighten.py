@@ -26,7 +26,7 @@ BOUNDARY_PADDING_SECONDS = -0.1
 # Buffer before the first segment so the intro breathes a bit.
 LEADING_EDGE_PADDING_SECONDS = 0.5
 # Buffer after the last segment so the outro isn’t abruptly chopped.
-TRAILING_EDGE_PADDING_SECONDS = 1
+TRAILING_EDGE_PADDING_SECONDS = 2
 
 # Encoding configuration tuned for Apple Silicon hardware acceleration.
 AUDIO_BITRATE = "192k"
