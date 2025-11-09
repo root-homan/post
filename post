@@ -16,7 +16,7 @@ def main():
         print("  -cut        Extract and process video cuts")
         print("  -tighten    Remove silence from video")
         print("  -srt        Generate SRT subtitles")
-        print("  -transcribe Generate transcription")
+        print("  -essay      Generate essay/transcript from SRT")
         print("  -captions   Add captions to video")
         print("  -endcard    Add endcard to video")
         print("  -stitch     Stitch multiple videos together")
