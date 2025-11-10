@@ -18,6 +18,7 @@ def main():
         print("  -tighten     Remove silence from video")
         print("  -convert     Convert rough cut to all-intra H.264 for fast tightening")
         print("  -compress    Compress video with VideoToolbox and crop to 4:3")
+        print("  -denoise     Remove background noise from audio using Facebook's denoiser")
         print("  -transcribe  Generate word-level timestamps")
         print("  -essay       Generate essay/transcript from timestamps")
         print("  -captions    Add captions to video")
