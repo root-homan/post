@@ -41,17 +41,19 @@ except ImportError:
 
 # dB floor below which audio counts as silence; tune to your mic noise.
 SILENCE_THRESHOLD_DB = -24.0
+# SILENCE_THRESHOLD_DB = -17.0 (for the wireless go 3 mic).
+
 # Minimum silence length (seconds) before we consider trimming it out.
 MIN_SILENCE_DURATION_SECONDS = 0.5
 # Extra audio to keep around each internal silence boundary (negative tightens).
 BOUNDARY_PADDING_SECONDS = -0.1
 
 # Buffer before the first segment so the intro breathes a bit.
-LEADING_EDGE_PADDING_SECONDS = 0.5
+LEADING_EDGE_PADDING_SECONDS = 1
 # Buffer after the last segment so the outro isn't abruptly chopped.
-TRAILING_EDGE_PADDING_SECONDS = 2
+TRAILING_EDGE_PADDING_SECONDS = 5
 # Maximum gap between words to keep them in the same segment (prevents mid-sentence cuts).
-WORD_MERGE_TOLERANCE_SECONDS = 0.5
+WORD_MERGE_TOLERANCE_SECONDS = 0.7
 
 # Encoding configuration tuned for Apple Silicon hardware acceleration.
 AUDIO_BITRATE = "192k"
@@ -387,6 +389,216 @@ def _extract_speech_segments_from_words(
     return merged
 
 
+def _find_nearest_silence_edge(
+    target_time: float,
+    silences: Sequence[SilenceWindow],
+    direction: str = "after",
+    max_search: float = 0.5,
+) -> Optional[float]:
+    """
+    Find the nearest silence edge to a target time.
+    
+    Args:
+        target_time: The time we want to find silence near
+        silences: List of silence windows
+        direction: "before" or "after" - which direction to search
+        max_search: Maximum distance to search for silence (seconds)
+    
+    Returns:
+        Time of nearest silence edge, or None if no silence found within max_search
+    """
+    if direction == "before":
+        # Look for silence end (where speech starts) before target_time
+        candidates = [
+            s.end for s in silences 
+            if s.end <= target_time and (target_time - s.end) <= max_search
+        ]
+        return max(candidates) if candidates else None
+    else:  # "after"
+        # Look for silence start (where speech ends) after target_time
+        candidates = [
+            s.start for s in silences 
+            if s.start >= target_time and (s.start - target_time) <= max_search
+        ]
+        return min(candidates) if candidates else None
+
+
+def _get_words_in_segment(
+    words: List[dict],
+    seg_start: float,
+    seg_end: float,
+) -> str:
+    """Extract and format the words that fall within a time segment."""
+    words_in_segment = []
+    for word in words:
+        word_start = word.get("start", 0)
+        word_end = word.get("end", 0)
+        # Include word if it overlaps with the segment
+        if word_end > seg_start and word_start < seg_end:
+            words_in_segment.append(word.get("word", "").strip())
+    
+    if not words_in_segment:
+        return "(no words detected)"
+    
+    # Join words and limit length for readability
+    phrase = " ".join(words_in_segment)
+    if len(phrase) > 80:
+        phrase = phrase[:77] + "..."
+    return f'"{phrase}"'
+
+
+def _validate_segments_with_silence(
+    segments: List[Tuple[float, float]],
+    words: List[dict],
+    silences: Sequence[SilenceWindow],
+    duration: float,
+    boundary_padding: float = -0.1,
+    trailing_padding: float = 2.0,
+    search_tolerance: float = 0.5,
+) -> List[Tuple[float, float]]:
+    """
+    Adjust Whisper-based segments to cut at actual silence points in the waveform.
+    
+    This ensures we never cut in the middle of audio - we only cut where the
+    waveform actually falls to silence.
+    
+    Args:
+        segments: Initial segments from Whisper word grouping
+        words: Original word list from Whisper (for displaying text)
+        silences: Detected silence windows from waveform analysis
+        duration: Total video duration
+        boundary_padding: Padding to apply at cut points (negative = tighter)
+        trailing_padding: Extra padding for the last segment
+        search_tolerance: How far to search for silence around boundaries
+    
+    Returns:
+        Adjusted segments that cut at actual silence points
+    """
+    if not segments:
+        return [(0.0, duration)]
+    
+    adjusted = []
+    
+    print(f"\n{'='*88}")
+    print(f"🌊 WAVEFORM VALIDATION")
+    print(f"{'='*88}")
+    print(f"Validating {len(segments)} segment(s) against waveform silence...\n")
+    
+    for i, (seg_start, seg_end) in enumerate(segments):
+        is_first = (i == 0)
+        is_last = (i == len(segments) - 1)
+        
+        original_start = seg_start
+        original_end = seg_end
+        
+        # Get the phrase for this segment
+        phrase = _get_words_in_segment(words, seg_start, seg_end)
+        
+        # Track validation status
+        start_validated = is_first  # First segment start is always OK
+        end_validated = False
+        start_adjusted = False
+        end_adjusted = False
+        
+        # For segment start: find where silence actually ends before this segment
+        if not is_first:
+            silence_end = _find_nearest_silence_edge(
+                seg_start, silences, direction="before", max_search=search_tolerance
+            )
+            if silence_end is not None:
+                adjusted_start = silence_end - boundary_padding
+                if abs(adjusted_start - seg_start) > 0.05:
+                    start_adjusted = True
+                seg_start = adjusted_start
+                start_validated = True
+            else:
+                start_validated = False
+        
+        # For segment end: find where silence actually starts after this segment
+        if not is_last:
+            silence_start = _find_nearest_silence_edge(
+                seg_end, silences, direction="after", max_search=search_tolerance
+            )
+            if silence_start is not None:
+                adjusted_end = silence_start + boundary_padding
+                if abs(adjusted_end - seg_end) > 0.05:
+                    end_adjusted = True
+                seg_end = adjusted_end
+                end_validated = True
+            else:
+                end_validated = False
+        else:
+            # Last segment - search further forward
+            silence_start = _find_nearest_silence_edge(
+                seg_end, silences, direction="after", 
+                max_search=trailing_padding + search_tolerance
+            )
+            if silence_start is not None:
+                adjusted_end = min(silence_start + boundary_padding + trailing_padding, duration)
+                if abs(adjusted_end - seg_end) > 0.05:
+                    end_adjusted = True
+                seg_end = adjusted_end
+                end_validated = True
+            else:
+                # No silence found - extend anyway
+                adjusted_end = min(seg_end + trailing_padding, duration)
+                end_adjusted = True
+                seg_end = adjusted_end
+                end_validated = False
+        
+        # Ensure segment is valid
+        seg_start = _clamp(seg_start, 0.0, duration)
+        seg_end = _clamp(seg_end, seg_start + 0.01, duration)
+        
+        adjusted.append((seg_start, seg_end))
+        
+        # Print detailed segment info
+        print(f"Segment {i+1}:")
+        print(f"  Phrase: {phrase}")
+        print(f"  Time:   [{original_start:.2f}s → {original_end:.2f}s]", end="")
+        if start_adjusted or end_adjusted:
+            print(f" → [{seg_start:.2f}s → {seg_end:.2f}s]")
+        else:
+            print()
+        
+        # Validation status
+        if is_first and is_last:
+            status = "✅ Only segment (no cuts needed)"
+        elif is_first:
+            if end_validated:
+                status = "✅ Waveform agrees (end)" if not end_adjusted else "📍 Adjusted to silence (end)"
+            else:
+                status = "⚠️  No silence found for end cut"
+        elif is_last:
+            if start_validated:
+                if end_validated:
+                    status = "✅ Waveform agrees (start+end)" if not (start_adjusted or end_adjusted) else "📍 Adjusted to silence (start+end)"
+                else:
+                    status_start = "✅" if not start_adjusted else "📍"
+                    status = f"{status_start} Start validated, end extended (+{trailing_padding}s)"
+            else:
+                status = "⚠️  No silence found for start cut"
+        else:
+            if start_validated and end_validated:
+                if not start_adjusted and not end_adjusted:
+                    status = "✅ Waveform agrees"
+                else:
+                    status = "📍 Adjusted to silence"
+            elif start_validated:
+                status = "📍 Start validated, ⚠️  end not validated"
+            elif end_validated:
+                status = "⚠️  Start not validated, 📍 end validated"
+            else:
+                status = "⚠️  No silence found for cuts"
+        
+        print(f"  Status: {status}")
+        print()
+    
+    print(f"{'='*88}")
+    print(f"✅ Waveform validation complete.\n")
+    return adjusted
+
+
 def _print_transcript(words: List[dict]) -> None:
     """Print the full transcript from word list in a readable format."""
     if not words:
@@ -710,13 +922,34 @@ def run(args):
         # Print transcript
         _print_transcript(words)
         
-        # Extract speech segments (these are the parts to KEEP)
-        keep_segments = _extract_speech_segments_from_words(
+        # Extract initial speech segments from Whisper word grouping
+        initial_segments = _extract_speech_segments_from_words(
             words, duration, leading_padding, trailing_padding, merge_tolerance=parsed.merge_tolerance
         )
         
         print(f"🎤 post -tighten: detected {len(words)} word(s) from Whisper transcription.")
         print(f"🔗 post -tighten: merging words within {parsed.merge_tolerance:.2f}s to prevent mid-sentence cuts.")
+        print(f"📊 post -tighten: initial segments from Whisper: {len(initial_segments)}")
+        
+        # Run silence detection to find actual quiet points in the waveform
+        # Use a sensitive threshold to catch all quiet moments
+        silence_threshold_db = -40.0  # More sensitive than full silence detection
+        min_silence_duration = 0.1  # Catch even brief pauses
+        
+        print(f"\n🔍 post -tighten: analyzing waveform for silence points (threshold={silence_threshold_db:.1f} dB)...")
+        silences = _detect_silences(rough_video, env, silence_threshold_db, min_silence_duration)
+        print(f"✅ post -tighten: found {len(silences)} silence window(s) in waveform.")
+        
+        # Validate and adjust segments to cut at actual silence points
+        keep_segments = _validate_segments_with_silence(
+            initial_segments,
+            words,
+            silences,
+            duration,
+            boundary_padding=parsed.boundary_padding,
+            trailing_padding=trailing_padding,
+            search_tolerance=0.5,
+        )
 
     # Common output for both modes
     formatted_segments = (
