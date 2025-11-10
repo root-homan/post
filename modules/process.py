@@ -6,10 +6,10 @@ if str(MODULE_DIR) not in sys.path:
     sys.path.insert(0, str(MODULE_DIR))
 
 try:
-    from .common import StageEnvironment, build_cli_parser
+    from .common import StageEnvironment, build_cli_parser, find_preferred_rough_video
     from . import tighten, transcribe, essay, captions
 except ImportError:
-    from common import StageEnvironment, build_cli_parser
+    from common import StageEnvironment, build_cli_parser, find_preferred_rough_video
     import tighten, transcribe, essay, captions
 
 
@@ -107,7 +107,7 @@ def run(args):
     )
     
     # Find the rough video
-    rough_video = env.expect_single_file("*-rough.mp4", "rough cut video")
+    rough_video = find_preferred_rough_video(env)
     
     print(f"🔍 post -process: analyzing completion status for '{rough_video.name}'...")
     status = check_completion_status(env.directory, rough_video)

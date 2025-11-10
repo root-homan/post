@@ -2,6 +2,7 @@ import argparse
 import os
 from dataclasses import dataclass
 from pathlib import Path
+from typing import List
 from openai import OpenAI
 
 
@@ -103,6 +104,70 @@ class StageEnvironment:
 
     def announce_checks_passed(self, details: str) -> None:
         print(f"🔍 post -{self.stage}: {details}")
+
+
+def _list_rough_videos(directory: Path) -> List[Path]:
+    return [
+        path
+        for path in sorted(directory.glob("*-rough.mp4"))
+        if path.is_file()
+    ]
+
+
+def find_original_rough_video(env: StageEnvironment) -> Path:
+    """
+    Locate the original rough cut (without '-intra-' inserted).
+    """
+    candidates = _list_rough_videos(env.directory)
+    originals = [path for path in candidates if "-intra-" not in path.stem]
+
+    if not originals:
+        env.abort(
+            "No original '-rough.mp4' video found. "
+            "If you already converted to an intra-frame proxy, rerun with --yes to overwrite."
+        )
+
+    if len(originals) > 1:
+        names = ", ".join(path.name for path in originals)
+        env.abort(
+            f"Found multiple rough cuts eligible for conversion: {names}. "
+            "Move or rename the extras, then try again."
+        )
+
+    return originals[0]
+
+
+def find_preferred_rough_video(env: StageEnvironment) -> Path:
+    """
+    Prefer an intra-frame rough cut when available, otherwise fall back to the original.
+    """
+    candidates = _list_rough_videos(env.directory)
+
+    if not candidates:
+        env.abort(
+            f"Expected rough cut video matching '*-rough.mp4' in '{env.directory}', but nothing was found."
+        )
+
+    intra_versions = [path for path in candidates if "-intra-" in path.stem]
+    if len(intra_versions) == 1:
+        return intra_versions[0]
+    if len(intra_versions) > 1:
+        names = ", ".join(path.name for path in intra_versions)
+        env.abort(
+            f"Found multiple intra-frame rough cuts: {names}. "
+            "Keep only one '-intra-rough.mp4' file in the directory."
+        )
+
+    originals = [path for path in candidates if "-intra-" not in path.stem]
+    if len(originals) == 1:
+        return originals[0]
+
+    names = ", ".join(path.name for path in originals)
+    env.abort(
+        f"Found multiple rough cuts without '-intra-': {names}. "
+        "Disambiguate the files and rerun the command."
+    )
+    raise AssertionError("unreachable")
 
 
 def call_gpt5(system_prompt: str, user_prompt: str, response_format=None, model: str = "gpt-5") -> str:

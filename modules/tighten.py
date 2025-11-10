@@ -3,6 +3,7 @@ import re
 import sys
 import shutil
 import subprocess
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, List, Sequence, Tuple
@@ -12,9 +13,17 @@ if str(MODULE_DIR) not in sys.path:
     sys.path.insert(0, str(MODULE_DIR))
 
 try:
-    from .common import StageEnvironment, build_cli_parser  # type: ignore[attr-defined]
+    from .common import (
+        StageEnvironment,
+        build_cli_parser,
+        find_preferred_rough_video,
+    )  # type: ignore[attr-defined]
 except ImportError:  # pragma: no cover - handles execution as a standalone script
-    from common import StageEnvironment, build_cli_parser  # type: ignore[attr-defined]
+    from common import (
+        StageEnvironment,
+        build_cli_parser,
+        find_preferred_rough_video,
+    )  # type: ignore[attr-defined]
 
 # dB floor below which audio counts as silence; tune to your mic noise.
 SILENCE_THRESHOLD_DB = -24.0
@@ -31,7 +40,7 @@ TRAILING_EDGE_PADDING_SECONDS = 2
 # Encoding configuration tuned for Apple Silicon hardware acceleration.
 AUDIO_BITRATE = "192k"
 VIDEOTOOLBOX_CODEC = "h264_videotoolbox"
-VIDEOTOOLBOX_GLOBAL_QUALITY = 55
+VIDEOTOOLBOX_GLOBAL_QUALITY = 70
 VIDEOTOOLBOX_PIX_FMT = "yuv420p"
 
 
@@ -122,6 +131,44 @@ def _probe_duration(path: Path, env: StageEnvironment) -> float:
     raise AssertionError("unreachable")  # pragma: no cover
 
 
+def _probe_dimensions(path: Path, env: StageEnvironment) -> Tuple[int, int]:
+    """Probe video dimensions and return (width, height)."""
+    process = subprocess.Popen(
+        [
+            "ffprobe",
+            "-v",
+            "error",
+            "-select_streams",
+            "v:0",
+            "-show_entries",
+            "stream=width,height",
+            "-of",
+            "csv=p=0",
+            str(path),
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+
+    try:
+        stdout, stderr = process.communicate()
+        return_code = process.returncode
+    except KeyboardInterrupt:
+        _terminate_process(process)
+        raise
+
+    if return_code != 0:
+        env.abort(f"ffprobe failed for '{path.name}': {stderr.strip()}")
+
+    try:
+        width_str, height_str = stdout.strip().split(",")
+        return int(width_str), int(height_str)
+    except (ValueError, AttributeError):
+        env.abort(f"Unable to parse dimensions from ffprobe output: {stdout!r}")
+    raise AssertionError("unreachable")  # pragma: no cover
+
+
 def _parse_silences(log_output: str, env: StageEnvironment, duration: float) -> Sequence[SilenceWindow]:
     start_pattern = re.compile(r"silence_start:\s*([0-9.+-]+)")
     end_pattern = re.compile(r"silence_end:\s*([0-9.+-]+)")
@@ -153,17 +200,24 @@ def _parse_silences(log_output: str, env: StageEnvironment, duration: float) -> 
     return tuple(silences)
 
 
-def _detect_silences(path: Path, env: StageEnvironment) -> Sequence[SilenceWindow]:
+def _detect_silences(
+    path: Path,
+    env: StageEnvironment,
+    threshold_db: float,
+    min_duration: float,
+) -> Sequence[SilenceWindow]:
     detect_filter = (
-        f"silencedetect=noise={SILENCE_THRESHOLD_DB}dB:d={MIN_SILENCE_DURATION_SECONDS}"
+        f"silencedetect=noise={threshold_db}dB:d={min_duration}"
     )
     process = subprocess.Popen(
         [
             "ffmpeg",
             "-hide_banner",
             "-nostdin",
+            "-threads", "0",  # Use all available CPU cores
             "-i",
             str(path),
+            "-vn",  # Skip video processing entirely - only analyze audio
             "-af",
             detect_filter,
             "-f",
@@ -195,16 +249,20 @@ def _clamp(value: float, lower: float, upper: float) -> float:
 
 
 def _build_keep_segments(
-    duration: float, silences: Sequence[SilenceWindow]
+    duration: float,
+    silences: Sequence[SilenceWindow],
+    boundary_padding: float,
+    leading_padding: float,
+    trailing_padding: float,
 ) -> List[Tuple[float, float]]:
     segments: List[Tuple[float, float]] = []
     cursor = 0.0
 
     for silence in silences:
-        start = _clamp(silence.start - BOUNDARY_PADDING_SECONDS, cursor, duration)
+        start = _clamp(silence.start - boundary_padding, cursor, duration)
         if start > cursor:
             segments.append((cursor, start))
-        cursor = _clamp(silence.end + BOUNDARY_PADDING_SECONDS, cursor, duration)
+        cursor = _clamp(silence.end + boundary_padding, cursor, duration)
 
     if cursor < duration:
         segments.append((cursor, duration))
@@ -213,9 +271,6 @@ def _build_keep_segments(
     if not cleaned:
         cleaned.append((0.0, duration))
     else:
-        leading_padding = LEADING_EDGE_PADDING_SECONDS
-        trailing_padding = TRAILING_EDGE_PADDING_SECONDS
-
         first_start, first_end = cleaned[0]
         adjusted_first_start = _clamp(
             first_start - leading_padding, 0.0, first_end
@@ -257,81 +312,70 @@ def _encode_tightened(
     segments: Sequence[Tuple[float, float]],
     env: StageEnvironment,
 ) -> None:
-    filters: List[str] = []
-    concat_inputs: List[str] = []
+    """Concatenate segments using stream copy (requires all-intra source)."""
+    if not segments:
+        env.abort("No segments provided for encoding.")
 
-    for idx, (start, end) in enumerate(segments):
-        start_ts = _format_ts(start)
-        end_ts = _format_ts(end)
-        filters.append(
-            f"[0:v]trim=start={start_ts}:end={end_ts},setpts=PTS-STARTPTS[v{idx}]"
-        )
-        filters.append(
-            f"[0:a]atrim=start={start_ts}:end={end_ts},asetpts=PTS-STARTPTS[a{idx}]"
-        )
-        concat_inputs.append(f"[v{idx}][a{idx}]")
+    concat_lines: List[str] = []
+    resolved_source = source.resolve()
 
-    filters.append(
-        f"{''.join(concat_inputs)}concat=n={len(segments)}:v=1:a=1[v][a]"
-    )
+    def _escape(path: Path) -> str:
+        safe = str(path).replace("'", "'\\''")
+        return f"'{safe}'"
 
-    filter_complex = ";".join(filters)
+    for start, end in segments:
+        if end <= start:
+            continue
+        concat_lines.append(f"file {_escape(resolved_source)}\n")
+        concat_lines.append(f"inpoint {start:.6f}\n")
+        concat_lines.append(f"outpoint {end:.6f}\n")
 
-    if sys.platform != "darwin":
-        env.abort(
-            "VideoToolbox hardware encoding requires macOS. "
-            "Run on Apple Silicon or adjust the workflow."
-        )
+    if not concat_lines:
+        env.abort("No valid segments remained after trimming.")
 
-    encoder_label = f"{VIDEOTOOLBOX_CODEC} (q:v={VIDEOTOOLBOX_GLOBAL_QUALITY})"
-    print(f"🚀 post -tighten: encoding via {encoder_label}.")
+    with tempfile.NamedTemporaryFile(
+        mode="w", delete=False, suffix=".txt"
+    ) as concat_file:
+        concat_file.writelines(concat_lines)
+        concat_path = Path(concat_file.name)
 
-    cmd = [
-        "ffmpeg",
-        "-hide_banner",
-        "-loglevel",
-        "error",
-        "-nostdin",
-        "-y",
-        "-i",
-        str(source),
-        "-filter_complex",
-        filter_complex,
-        "-map",
-        "[v]",
-        "-map",
-        "[a]",
-    ]
+    print("🚀 post -tighten: stream copying video, re-encoding audio for perfect sync.")
 
-    cmd.extend(
-        [
+    try:
+        cmd = [
+            "ffmpeg",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-nostdin",
+            "-y",
+            "-f",
+            "concat",
+            "-safe",
+            "0",
+            "-i",
+            str(concat_path),
             "-c:v",
-            VIDEOTOOLBOX_CODEC,
-            "-q:v",
-            str(VIDEOTOOLBOX_GLOBAL_QUALITY),
-            "-pix_fmt",
-            VIDEOTOOLBOX_PIX_FMT,
-            "-allow_sw",
-            "1",
-        ]
-    )
-
-    cmd.extend(
-        [
+            "copy",
             "-c:a",
             "aac",
             "-b:a",
             AUDIO_BITRATE,
-            "-progress",
-            "pipe:1",
-            "-nostats",
+            "-fflags",
+            "+genpts",
+            "-avoid_negative_ts",
+            "make_zero",
             "-movflags",
             "+faststart",
             str(destination),
         ]
-    )
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        if result.returncode != 0:
+            env.abort(f"ffmpeg concat failed: {result.stderr.strip()}")
+    finally:
+        concat_path.unlink(missing_ok=True)
 
-    _run_ffmpeg_with_progress(cmd, destination, _segments_total(segments), env)
+    print(f"📦 post -tighten: saved '{destination.name}'.")
 
 
 def _run_ffmpeg_with_progress(
@@ -419,6 +463,36 @@ def run(args):
         stage="tighten",
         summary="Remove leading, trailing, and mid-take silences from a rough cut.",
     )
+    parser.add_argument(
+        "--threshold",
+        type=float,
+        default=SILENCE_THRESHOLD_DB,
+        help=f"Silence threshold in dB (default: {SILENCE_THRESHOLD_DB})",
+    )
+    parser.add_argument(
+        "--min-silence",
+        type=float,
+        default=MIN_SILENCE_DURATION_SECONDS,
+        help=f"Minimum silence duration in seconds to remove (default: {MIN_SILENCE_DURATION_SECONDS})",
+    )
+    parser.add_argument(
+        "--boundary-padding",
+        type=float,
+        default=BOUNDARY_PADDING_SECONDS,
+        help=f"Padding around silence boundaries in seconds, negative values tighten more (default: {BOUNDARY_PADDING_SECONDS})",
+    )
+    parser.add_argument(
+        "--leading-padding",
+        type=float,
+        default=LEADING_EDGE_PADDING_SECONDS,
+        help=f"Padding before the first segment in seconds (default: {LEADING_EDGE_PADDING_SECONDS})",
+    )
+    parser.add_argument(
+        "--trailing-padding",
+        type=float,
+        default=TRAILING_EDGE_PADDING_SECONDS,
+        help=f"Padding after the last segment in seconds (default: {TRAILING_EDGE_PADDING_SECONDS})",
+    )
     parsed = parser.parse_args(args)
 
     env = StageEnvironment.create(
@@ -427,7 +501,12 @@ def run(args):
         auto_confirm=parsed.yes,
     )
 
-    rough_video = env.expect_single_file("*-rough.mp4", "rough cut video")
+    rough_video = find_preferred_rough_video(env)
+    if "-intra-" not in rough_video.stem:
+        env.abort(
+            "Tighten now expects an all-intra rough cut. "
+            "Run 'post -convert' first to generate '<title>-<take>-intra-rough.mp4'."
+        )
     base_name = rough_video.name[: -len("-rough.mp4")]
     tightened_video = rough_video.with_name(f"{base_name}-rough-tight.mp4")
 
@@ -439,23 +518,32 @@ def run(args):
     _ensure_tool("ffmpeg", env)
     _ensure_tool("ffprobe", env)
 
+    # Extract parameters from parsed args
+    threshold_db = parsed.threshold
+    min_silence = parsed.min_silence
+    boundary_padding = parsed.boundary_padding
+    leading_padding = parsed.leading_padding
+    trailing_padding = parsed.trailing_padding
+
     duration = _probe_duration(rough_video, env)
     print(
-        f"🎧 post -tighten: detecting silences (threshold={SILENCE_THRESHOLD_DB:.1f} dB, "
-        f"min_duration={MIN_SILENCE_DURATION_SECONDS:.1f}s, padding={BOUNDARY_PADDING_SECONDS:.2f}s, "
-        f"start_edge={LEADING_EDGE_PADDING_SECONDS:.2f}s, end_edge={TRAILING_EDGE_PADDING_SECONDS:.2f}s)."
+        f"🎧 post -tighten: detecting silences (threshold={threshold_db:.1f} dB, "
+        f"min_duration={min_silence:.1f}s, padding={boundary_padding:.2f}s, "
+        f"start_edge={leading_padding:.2f}s, end_edge={trailing_padding:.2f}s)."
     )
-    silences = _detect_silences(rough_video, env)
+    silences = _detect_silences(rough_video, env, threshold_db, min_silence)
     print(f"🔍 post -tighten: raw silences detected: {_format_windows(silences)}.")
 
     long_silences = [
         window
         for window in silences
-        if window.duration >= MIN_SILENCE_DURATION_SECONDS
+        if window.duration >= min_silence
     ]
-    print(f"🪵 post -tighten: silences ≥ {MIN_SILENCE_DURATION_SECONDS:.1f}s: {_format_windows(long_silences)}.")
+    print(f"🪵 post -tighten: silences ≥ {min_silence:.1f}s: {_format_windows(long_silences)}.")
 
-    keep_segments = _build_keep_segments(duration, long_silences)
+    keep_segments = _build_keep_segments(
+        duration, long_silences, boundary_padding, leading_padding, trailing_padding
+    )
     formatted_segments = (
         ", ".join(
             f"[{start:.2f}s → {end:.2f}s | {(end-start):.2f}s]" for start, end in keep_segments
@@ -466,7 +554,7 @@ def run(args):
     print(f"🎬 post -tighten: segments to keep: {formatted_segments}.")
 
     print(
-        f"🔊 post -tighten: detected {len(long_silences)} silence window(s) ≥ {MIN_SILENCE_DURATION_SECONDS:.1f}s with threshold {SILENCE_THRESHOLD_DB:.1f} dB."
+        f"🔊 post -tighten: detected {len(long_silences)} silence window(s) ≥ {min_silence:.1f}s with threshold {threshold_db:.1f} dB."
     )
     print(
         f"✂️  post -tighten: keeping {len(keep_segments)} segment(s) totalling {_segments_total(keep_segments):.1f}s out of {duration:.1f}s."
@@ -475,6 +563,5 @@ def run(args):
     _encode_tightened(rough_video, tightened_video, keep_segments, env)
 
     print(
-        f"✅ post -tighten: wrote tightened cut to '{tightened_video.name}' "
-        f"({VIDEOTOOLBOX_CODEC}, q:v={VIDEOTOOLBOX_GLOBAL_QUALITY})."
+        f"✅ post -tighten: wrote tightened cut to '{tightened_video.name}'."
     )

@@ -1,7 +1,11 @@
 import re
 import subprocess
 from pathlib import Path
-from .common import StageEnvironment, build_cli_parser
+
+try:
+    from .common import StageEnvironment, build_cli_parser
+except ImportError:
+    from common import StageEnvironment, build_cli_parser
 
 
 def parse_timestamp(timestamp_str: str) -> float:

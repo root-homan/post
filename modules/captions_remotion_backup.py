@@ -1,5 +1,6 @@
 import subprocess
 import json
+import shutil
 from pathlib import Path
 
 try:
@@ -201,148 +202,143 @@ def load_grouping(grouping_path: Path):
     return data.get("groups", [])
 
 
-def format_ass_time(seconds: float) -> str:
+def render_captions_with_remotion(
+    grouping_path: Path,
+    output_video: Path,
+    video_width: int,
+    video_height: int,
+    fps: float,
+    duration: float
+):
     """
-    Convert seconds to ASS subtitle time format: H:MM:SS.CC
-    where CC is centiseconds (1/100th of a second)
-    """
-    hours = int(seconds // 3600)
-    minutes = int((seconds % 3600) // 60)
-    secs = int(seconds % 60)
-    centiseconds = int((seconds % 1) * 100)
-    return f"{hours}:{minutes:02d}:{secs:02d}.{centiseconds:02d}"
-
-
-def create_ass_subtitles(lines, video_width: int, video_height: int, ass_path: Path):
-    """
-    Create an ASS subtitle file from word groupings.
+    Render captions using Remotion.
     
-    ASS format supports rich styling and positioning.
+    Args:
+        grouping_path: Path to the grouping JSON file
+        output_video: Path to write the caption video
+        video_width: Video width in pixels
+        video_height: Video height in pixels
+        fps: Frames per second
+        duration: Duration in seconds
     """
-    # Calculate positioning (27% from bottom, matching Remotion)
-    margin_v = int(video_height * 0.27)
+    # Get the remotion directory
+    remotion_dir = Path(__file__).parent.parent / "remotion"
     
-    # ASS header with styling
-    # Using a large font size and bold weight to match the Remotion styling
-    # PlayResX and PlayResY set the coordinate system for positioning
-    ass_content = f"""[Script Info]
-Title: Captions
-ScriptType: v4.00+
-PlayResX: {video_width}
-PlayResY: {video_height}
-WrapStyle: 0
-
-[V4+ Styles]
-Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Default,Inter,96,&H00FFFFFF,&H000000FF,&H00000000,&H00000000,-1,0,0,0,100,100,0,0,1,0,0,2,10,10,{margin_v},1
-
-[Events]
-Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
-"""
+    if not remotion_dir.exists():
+        raise RuntimeError(f"Remotion directory not found at '{remotion_dir}'")
     
-    # Add each line as a subtitle event
-    for line_words in lines:
-        if not line_words:
-            continue
+    # Check if node_modules exists, if not, install dependencies
+    node_modules = remotion_dir / "node_modules"
+    if not node_modules.exists():
+        print("📦 Installing Remotion dependencies (first time only)...")
+        try:
+            subprocess.run(
+                ["npm", "install"],
+                cwd=remotion_dir,
+                check=True,
+                capture_output=True
+            )
+            print("✅ Dependencies installed!")
+        except subprocess.CalledProcessError as e:
+            raise RuntimeError(f"Failed to install npm dependencies: {e}")
+    
+    # Load the grouping data
+    with open(grouping_path, 'r', encoding='utf-8') as f:
+        grouping_data = json.load(f)
+    
+    # Prepare props for Remotion
+    # Note: Must match the structure expected by CaptionScene component
+    duration_in_frames = int(duration * fps)
+    remotion_props = {
+        "inputProps": {
+            "groups": grouping_data["groups"],
+            "videoWidth": video_width,
+            "videoHeight": video_height,
+            "fps": fps,
+            "durationInFrames": duration_in_frames
+        }
+    }
+    
+    # Write props to a temporary file
+    props_file = remotion_dir / "caption-props.json"
+    with open(props_file, 'w', encoding='utf-8') as f:
+        json.dump(remotion_props, f)
+    
+    print(f"🎬 Rendering captions with Remotion ({duration_in_frames} frames at {fps} fps)...")
+    
+    # Call Remotion CLI to render
+    # Note: Remotion adds the extension automatically based on codec, so we pass path without extension
+    output_without_ext = output_video.with_suffix('')
+    
+    try:
+        cmd = [
+            "npx",
+            "remotion", "render",
+            "CaptionScene",
+            str(output_without_ext),
+            "--props", str(props_file),
+            "--codec", "prores",  # Use ProRes for transparency support
+            "--prores-profile", "4444",  # 4444 profile supports alpha channel
+            "--pixel-format", "yuva444p10le",  # Ensure alpha channel is preserved
+        ]
         
-        start_time = line_words[0]['start']
-        end_time = line_words[-1]['end']
+        subprocess.run(
+            cmd,
+            cwd=remotion_dir,
+            check=True,
+            capture_output=False
+        )
         
-        # Combine words into a single line
-        text = ' '.join(word['word'] for word in line_words)
+        # Remotion will create the file with .mov extension automatically
+        # Check if it exists and rename if needed to match our expected path
+        remotion_output = Path(str(output_without_ext) + '.mov')
+        if remotion_output.exists() and remotion_output != output_video:
+            remotion_output.rename(output_video)
         
-        # ASS subtitle event
-        # Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
-        event_line = f"Dialogue: 0,{format_ass_time(start_time)},{format_ass_time(end_time)},Default,,0,0,0,,{text}\n"
-        ass_content += event_line
-    
-    # Write the ASS file
-    with open(ass_path, 'w', encoding='utf-8') as f:
-        f.write(ass_content)
-    
-    print(f"📝 Created ASS subtitle file with {len(lines)} caption lines")
+        # Clean up props file
+        props_file.unlink()
+        
+        print(f"✅ Caption video rendered successfully!")
+        
+    except subprocess.CalledProcessError as e:
+        raise RuntimeError(f"Remotion render failed: {e}")
 
 
-def burn_captions_with_ffmpeg(video_path: Path, ass_path: Path, output_path: Path):
+def overlay_captions(video_path: Path, caption_video_path: Path, output_path: Path):
     """
-    Use ffmpeg to burn ASS subtitles directly onto the video.
-    
-    This is MUCH faster than Remotion because:
-    1. No Node.js startup overhead
-    2. No React rendering
-    3. Native ffmpeg text rendering (hardware accelerated)
-    4. Single-pass encoding
+    Use ffmpeg to overlay the caption video (with transparency) onto the main video.
     """
-    print(f"🔥 Burning captions with ffmpeg (hardware accelerated)...")
-    
-    # Use hardware acceleration on macOS (VideoToolbox)
     cmd = [
         'ffmpeg',
-        '-hide_banner',
-        '-loglevel', 'error',
-        '-nostdin',
-        '-i', str(video_path),
-        '-vf', f"ass={ass_path}",
-        '-c:v', 'h264_videotoolbox',
-        '-q:v', '55',  # Match the quality from tighten.py
-        '-pix_fmt', 'yuv420p',
+        '-i', str(video_path),  # Main video
+        '-i', str(caption_video_path),  # Caption video with alpha
+        '-filter_complex', '[0:v][1:v]overlay=format=auto',  # Overlay with alpha channel support
         '-c:a', 'copy',  # Copy audio without re-encoding
-        '-movflags', '+faststart',
-        '-y',
+        '-pix_fmt', 'yuv420p',  # Ensure output is in standard format
+        '-y',  # Overwrite output file
         str(output_path)
     ]
     
     try:
-        result = subprocess.run(cmd, check=True, capture_output=True, text=True)
-        print(f"✅ Captions burned successfully!")
+        subprocess.run(cmd, check=True, capture_output=False)
     except subprocess.CalledProcessError as e:
-        # If hardware encoding fails, fall back to software encoding
-        print(f"⚠️  Hardware encoding failed, falling back to software encoding...")
-        cmd_fallback = [
-            'ffmpeg',
-            '-hide_banner',
-            '-loglevel', 'error',
-            '-nostdin',
-            '-i', str(video_path),
-            '-vf', f"ass={ass_path}",
-            '-c:v', 'libx264',
-            '-preset', 'veryfast',  # Fast encoding
-            '-crf', '18',  # High quality
-            '-pix_fmt', 'yuv420p',
-            '-c:a', 'copy',
-            '-movflags', '+faststart',
-            '-y',
-            str(output_path)
-        ]
-        subprocess.run(cmd_fallback, check=True, capture_output=False)
-        print(f"✅ Captions burned successfully (software encoding)!")
+        raise RuntimeError(f"ffmpeg overlay failed: {e}")
 
 
 def run(args):
     """
-    FAST caption rendering using ffmpeg's native ASS subtitle burning.
-    
-    This is 10-100x faster than Remotion because it:
-    - Uses native ffmpeg text rendering (no Node.js/React overhead)
-    - Hardware accelerated encoding
-    - Single-pass processing
-    
-    Trade-offs:
-    - No fancy karaoke sweep animation
-    - No drop animation
-    - But still looks great and renders in seconds instead of minutes!
-    
     Dependencies:
         - A tightened video `<title>-<take_id>-rough-tight.mp4` must be present in the working directory.
         - A matching word timestamps file `<title>-<take_id>-rough-tight.json` (same basename as the video) must exist.
         - ffmpeg must be installed and available in PATH.
+        - Node.js and npm must be installed (for Remotion).
     Failure behaviour:
         - Aborts when either artefact is missing, when multiple candidates exist, or when the basenames differ.
         - Prompts before overwriting `<title>-<take_id>-rough-tight-captions.mp4` unless `--yes` is provided.
     Output:
-        - Produces `<title>-<take_id>-rough-tight-captions.mp4`, augmenting the tightened video with burnt-in captions.
+        - Produces `<title>-<take_id>-rough-tight-captions.mp4`, augmenting the tightened video with rendered captions.
+        - Also produces an intermediate `<title>-<take_id>-rough-tight-captions-only.mov` (ProRes with alpha) containing just the captions.
         - Also produces `<title>-<take_id>-rough-tight-grouping.json` containing the word grouping for reuse.
-        - Also produces `<title>-<take_id>-rough-tight.ass` containing the ASS subtitle file.
     Grouping workflow:
         - If a grouping file exists, prompts whether to reuse it (unless `--yes` is provided, which auto-reuses).
         - This allows regenerating captions with different styling without re-running GPT grouping.
@@ -350,7 +346,7 @@ def run(args):
     """
     parser = build_cli_parser(
         stage="captions",
-        summary="Render the tightened take with burnt-in captions (FAST version using ffmpeg).",
+        summary="Render the tightened take with burnt-in captions from word timestamps.",
     )
     parsed = parser.parse_args(args)
 
@@ -370,8 +366,8 @@ def run(args):
         )
 
     captions_video = tightened_video.with_name(f"{tightened_video.stem}-captions.mp4")
+    caption_only_video = tightened_video.with_name(f"{tightened_video.stem}-captions-only.mov")
     grouping_file = tightened_video.with_name(f"{tightened_video.stem}-grouping.json")
-    ass_file = tightened_video.with_name(f"{tightened_video.stem}.ass")
 
     env.ensure_output_path(captions_video)
     env.announce_checks_passed(
@@ -385,7 +381,7 @@ def run(args):
     except Exception as e:
         env.abort(f"Failed to get video info: {e}")
 
-    # Step 1: Handle word grouping
+    # Step 1: Handle word grouping (separate from ASS generation)
     lines = None
     if grouping_file.exists():
         print(f"📋 Found existing grouping file '{grouping_file.name}'")
@@ -416,17 +412,26 @@ def run(args):
         # Save the grouping for future reuse
         save_grouping(grouping_file, lines)
 
-    # Step 2: Create ASS subtitle file
-    print(f"📝 Creating ASS subtitle file...")
+    # Step 2: Render captions with Remotion
+    print(f"🎬 post -captions: rendering captions with Remotion...")
     try:
-        create_ass_subtitles(lines, video_info['width'], video_info['height'], ass_file)
+        render_captions_with_remotion(
+            grouping_file,
+            caption_only_video,
+            video_info['width'],
+            video_info['height'],
+            video_info['fps'],
+            video_info['duration']
+        )
+        print(f"✅ post -captions: caption video rendered successfully!")
     except Exception as e:
-        env.abort(f"Failed to create ASS subtitles: {e}")
+        env.abort(f"Failed to render captions: {e}")
 
-    # Step 3: Burn captions with ffmpeg (FAST!)
+    # Step 3: Overlay captions onto main video
+    print(f"🎬 post -captions: overlaying captions onto video...")
     try:
-        burn_captions_with_ffmpeg(tightened_video, ass_file, captions_video)
+        overlay_captions(tightened_video, caption_only_video, captions_video)
         print(f"✅ post -captions: successfully created '{captions_video.name}' with captions!")
     except Exception as e:
-        env.abort(f"Failed to burn captions: {e}")
+        env.abort(f"Failed to overlay captions: {e}")
 
