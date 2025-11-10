@@ -3,7 +3,6 @@ import re
 import sys
 import shutil
 import subprocess
-import tempfile
 import json
 import torch
 from dataclasses import dataclass
@@ -11,8 +10,11 @@ from pathlib import Path
 from typing import Iterable, List, Sequence, Tuple, Optional
 
 MODULE_DIR = Path(__file__).resolve().parent
+UTILS_DIR = MODULE_DIR.parent / "utils"
 if str(MODULE_DIR) not in sys.path:
     sys.path.insert(0, str(MODULE_DIR))
+if str(UTILS_DIR) not in sys.path:
+    sys.path.insert(0, str(UTILS_DIR))
 
 try:
     from .common import (
@@ -27,6 +29,16 @@ except ImportError:  # pragma: no cover - handles execution as a standalone scri
         find_preferred_rough_video,
     )  # type: ignore[attr-defined]
 
+# Import shared video editing utilities
+try:
+    from video_editing import concatenate_segments
+except ImportError:
+    import sys
+    from pathlib import Path
+    utils_path = Path(__file__).resolve().parent.parent / "utils"
+    sys.path.insert(0, str(utils_path))
+    from video_editing import concatenate_segments
+
 # dB floor below which audio counts as silence; tune to your mic noise.
 SILENCE_THRESHOLD_DB = -24.0
 # Minimum silence length (seconds) before we consider trimming it out.
@@ -36,8 +48,10 @@ BOUNDARY_PADDING_SECONDS = -0.1
 
 # Buffer before the first segment so the intro breathes a bit.
 LEADING_EDGE_PADDING_SECONDS = 0.5
-# Buffer after the last segment so the outro isn’t abruptly chopped.
+# Buffer after the last segment so the outro isn't abruptly chopped.
 TRAILING_EDGE_PADDING_SECONDS = 2
+# Maximum gap between words to keep them in the same segment (prevents mid-sentence cuts).
+WORD_MERGE_TOLERANCE_SECONDS = 0.5
 
 # Encoding configuration tuned for Apple Silicon hardware acceleration.
 AUDIO_BITRATE = "192k"
@@ -250,141 +264,114 @@ def _clamp(value: float, lower: float, upper: float) -> float:
     return max(lower, min(upper, value))
 
 
-def _run_whisperx(
+def _run_stable_whisper(
     path: Path,
     env: StageEnvironment,
     model_name: str = "large-v2",
-) -> Tuple[dict, Path]:
+) -> List[dict]:
     """
-    Run WhisperX on the video file and return the transcription result.
-    Returns a tuple of (result_dict, temp_file_path).
+    Run stable-ts on the video file and return word-level timestamps.
+    Returns the words list.
     """
     try:
-        import whisperx
+        import stable_whisper
     except ImportError:
         env.abort(
-            "WhisperX is not installed. Install it with: pip install whisperx"
+            "stable-ts is not installed. Install it with: pip3 install --break-system-packages stable-ts"
         )
 
     # Detect device
-    device = "cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu"
-    compute_type = "float16" if device in ["cuda", "mps"] else "int8"
+    # Note: MPS has numerical stability issues with Whisper, so we use CPU on macOS
+    device = "cuda" if torch.cuda.is_available() else "cpu"
     
     print(f"\n{'='*80}")
-    print(f"🎤 WHISPERX TRANSCRIPTION")
+    print(f"🎤 STABLE-TS TRANSCRIPTION")
     print(f"{'='*80}")
     print(f"  Device: {device.upper()}")
     print(f"  Model: {model_name}")
-    print(f"  Compute Type: {compute_type}")
     print(f"  Source: {path.name}")
     print(f"{'='*80}\n")
     
     # Load model
-    print(f"⏳ [1/4] Loading WhisperX model '{model_name}'...", flush=True)
-    try:
-        model = whisperx.load_model(model_name, device, compute_type=compute_type)
-    except AttributeError as error:
-        message = str(error)
-        if "AudioMetaData" in message:
-            env.abort(
-                "WhisperX requires a recent PyTorch audio stack, but the installed "
-                "torchaudio build is missing 'AudioMetaData'.\n\n"
-                "Fix it by reinstalling the PyTorch packages built for Apple Silicon:\n"
-                "    pip3 uninstall torchaudio\n"
-                "    pip3 install --break-system-packages --pre torch torchvision torchaudio "
-                "--index-url https://download.pytorch.org/whl/nightly/cpu\n\n"
-                "If you continue to see this message, install Python 3.12 (PyTorch does not "
-                "yet ship wheels for Python 3.13) and rerun the install commands."
-            )
-        raise
-    print(f"✅ [1/4] Model loaded successfully.\n", flush=True)
+    print(f"⏳ [1/3] Loading Whisper model '{model_name}'...", flush=True)
+    model = stable_whisper.load_model(model_name, device=device)
+    print(f"✅ [1/3] Model loaded successfully.\n", flush=True)
     
-    # Load audio
-    print(f"⏳ [2/4] Loading audio from '{path.name}'...", flush=True)
-    audio = whisperx.load_audio(str(path))
-    audio_duration = len(audio) / 16000  # WhisperX uses 16kHz
-    print(f"✅ [2/4] Audio loaded ({audio_duration:.1f}s).\n", flush=True)
+    # Transcribe with word-level timestamps
+    print(f"⏳ [2/3] Transcribing audio with word-level precision (this may take a minute)...", flush=True)
+    result = model.transcribe(str(path), word_timestamps=True)
+    print(f"✅ [2/3] Transcription complete.\n", flush=True)
     
-    # Transcribe with progress
-    print(f"⏳ [3/4] Transcribing audio (this may take a minute)...", flush=True)
-    result = model.transcribe(audio, batch_size=16, print_progress=True)
-    print(f"✅ [3/4] Transcription complete.\n", flush=True)
+    # Extract words with timestamps
+    print(f"⏳ [3/3] Extracting word-level timestamps...", flush=True)
+    words = []
+    for segment in result.segments:
+        for word in segment.words:
+            words.append({
+                'word': word.word.strip(),
+                'start': word.start,
+                'end': word.end
+            })
+    print(f"✅ [3/3] Extracted {len(words)} words.\n", flush=True)
     
-    # Align whisper output
-    print(f"⏳ [4/4] Aligning transcript for word-level precision...", flush=True)
-    detected_language = result.get("language", "en")
-    print(f"    Detected language: {detected_language}", flush=True)
+    # Save to persistent file in the working directory
+    output_path = env.directory / "silence.json"
+    with open(output_path, 'w') as f:
+        json.dump(words, f, indent=2)
     
-    model_a, metadata = whisperx.load_align_model(language_code=detected_language, device=device)
-    result = whisperx.align(
-        result["segments"], 
-        model_a, 
-        metadata, 
-        audio, 
-        device, 
-        return_char_alignments=False
-    )
-    print(f"✅ [4/4] Alignment complete.\n", flush=True)
-    
-    # Save to temp file
-    temp_file = tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='-whisperx.json')
-    temp_path = Path(temp_file.name)
-    
-    with open(temp_path, 'w') as f:
-        json.dump(result, f, indent=2)
-    
-    print(f"💾 Saved WhisperX output to: {temp_path}")
+    print(f"💾 Saved transcription to: {output_path.name}")
     print(f"{'='*80}\n")
     
-    return result, temp_path
+    return words
 
 
-def _extract_speech_segments_from_whisperx(
-    whisperx_result: dict,
+def _extract_speech_segments_from_words(
+    words: List[dict],
     duration: float,
     leading_padding: float,
     trailing_padding: float,
+    merge_tolerance: float = WORD_MERGE_TOLERANCE_SECONDS,
 ) -> List[Tuple[float, float]]:
     """
-    Extract speech segments from WhisperX result.
+    Extract speech segments from word-level timestamps.
     Returns list of (start, end) tuples representing where speech occurs.
-    """
-    segments = whisperx_result.get("segments", [])
     
-    if not segments:
+    Args:
+        words: List of word dictionaries with 'start' and 'end' timestamps
+        duration: Total duration of the video
+        leading_padding: Padding before the first segment
+        trailing_padding: Padding after the last segment
+        merge_tolerance: Maximum gap between words to keep in same segment (prevents mid-sentence cuts)
+    """
+    if not words:
         return [(0.0, duration)]
     
     # Extract all word boundaries
     speech_ranges: List[Tuple[float, float]] = []
     
-    for segment in segments:
-        words = segment.get("words", [])
-        if not words:
-            # Fallback to segment-level timing if no word-level timing
-            start = segment.get("start", 0.0)
-            end = segment.get("end", duration)
+    for word in words:
+        start = word.get("start")
+        end = word.get("end")
+        if start is not None and end is not None:
             speech_ranges.append((start, end))
-        else:
-            # Use word-level timing for precision
-            for word in words:
-                start = word.get("start")
-                end = word.get("end")
-                if start is not None and end is not None:
-                    speech_ranges.append((start, end))
     
     if not speech_ranges:
         return [(0.0, duration)]
     
-    # Merge overlapping or adjacent ranges
+    # Merge overlapping or nearby ranges (within merge_tolerance)
     speech_ranges.sort(key=lambda x: x[0])
     merged: List[Tuple[float, float]] = [speech_ranges[0]]
     
     for start, end in speech_ranges[1:]:
         last_start, last_end = merged[-1]
-        if start <= last_end:
-            # Merge overlapping ranges
+        gap = start - last_end
+        
+        # Merge if overlapping or gap is within tolerance
+        if gap <= merge_tolerance:
+            # Keep the same start, extend to the new end
             merged[-1] = (last_start, max(last_end, end))
         else:
+            # Gap is too large, create a new segment (this is where we'll cut)
             merged.append((start, end))
     
     # Apply padding to first and last segments
@@ -400,30 +387,18 @@ def _extract_speech_segments_from_whisperx(
     return merged
 
 
-def _print_whisperx_transcript(whisperx_result: dict) -> None:
-    """Print the full transcript from WhisperX result in a readable format."""
-    segments = whisperx_result.get("segments", [])
-    
-    if not segments:
+def _print_transcript(words: List[dict]) -> None:
+    """Print the full transcript from word list in a readable format."""
+    if not words:
         print("📄 post -tighten: no transcript detected.")
         return
     
-    # Count total words
-    total_words = sum(len(seg.get("words", [])) for seg in segments)
-    if total_words == 0:
-        # Fallback to segment text if no word-level data
-        total_words = sum(len(seg.get("text", "").split()) for seg in segments)
-    
-    print(f"\n📄 post -tighten: words detected → {total_words} words")
+    print(f"\n📄 post -tighten: words detected → {len(words)} words")
     print("=" * 80)
     
-    full_transcript = []
-    for segment in segments:
-        text = segment.get("text", "").strip()
-        if text:
-            full_transcript.append(text)
-    
-    transcript_text = " ".join(full_transcript)
+    # Build transcript from words
+    transcript_words = [w.get("word", "").strip() for w in words]
+    transcript_text = " ".join(transcript_words)
     print(transcript_text)
     print("=" * 80)
     print()
@@ -494,68 +469,13 @@ def _encode_tightened(
     env: StageEnvironment,
 ) -> None:
     """Concatenate segments using stream copy (requires all-intra source)."""
-    if not segments:
-        env.abort("No segments provided for encoding.")
-
-    concat_lines: List[str] = []
-    resolved_source = source.resolve()
-
-    def _escape(path: Path) -> str:
-        safe = str(path).replace("'", "'\\''")
-        return f"'{safe}'"
-
-    for start, end in segments:
-        if end <= start:
-            continue
-        concat_lines.append(f"file {_escape(resolved_source)}\n")
-        concat_lines.append(f"inpoint {start:.6f}\n")
-        concat_lines.append(f"outpoint {end:.6f}\n")
-
-    if not concat_lines:
-        env.abort("No valid segments remained after trimming.")
-
-    with tempfile.NamedTemporaryFile(
-        mode="w", delete=False, suffix=".txt"
-    ) as concat_file:
-        concat_file.writelines(concat_lines)
-        concat_path = Path(concat_file.name)
-
     print("🚀 post -tighten: stream copying video, re-encoding audio for perfect sync.")
-
+    
     try:
-        cmd = [
-            "ffmpeg",
-            "-hide_banner",
-            "-loglevel",
-            "error",
-            "-nostdin",
-            "-y",
-            "-f",
-            "concat",
-            "-safe",
-            "0",
-            "-i",
-            str(concat_path),
-            "-c:v",
-            "copy",
-            "-c:a",
-            "aac",
-            "-b:a",
-            AUDIO_BITRATE,
-            "-fflags",
-            "+genpts",
-            "-avoid_negative_ts",
-            "make_zero",
-            "-movflags",
-            "+faststart",
-            str(destination),
-        ]
-        result = subprocess.run(cmd, capture_output=True, text=True)
-        if result.returncode != 0:
-            env.abort(f"ffmpeg concat failed: {result.stderr.strip()}")
-    finally:
-        concat_path.unlink(missing_ok=True)
-
+        concatenate_segments(source, destination, segments, audio_bitrate=AUDIO_BITRATE)
+    except (ValueError, RuntimeError) as e:
+        env.abort(str(e))
+    
     print(f"📦 post -tighten: saved '{destination.name}'.")
 
 
@@ -642,13 +562,13 @@ def run(args):
     """
     parser = build_cli_parser(
         stage="tighten",
-        summary="Remove leading, trailing, and mid-take silences from a rough cut using WhisperX (default) or silence detection.",
+        summary="Remove leading, trailing, and mid-take silences from a rough cut using Whisper (default) or silence detection.",
     )
     parser.add_argument(
         "--silence-threshold",
         type=float,
         default=None,
-        help=f"Use silence detection instead of WhisperX. Silence threshold in dB (e.g., {SILENCE_THRESHOLD_DB})",
+        help=f"Use silence detection instead of Whisper. Silence threshold in dB (e.g., {SILENCE_THRESHOLD_DB})",
     )
     parser.add_argument(
         "--threshold",
@@ -681,10 +601,16 @@ def run(args):
         help=f"Padding after the last segment in seconds (default: {TRAILING_EDGE_PADDING_SECONDS})",
     )
     parser.add_argument(
+        "--merge-tolerance",
+        type=float,
+        default=WORD_MERGE_TOLERANCE_SECONDS,
+        help=f"Maximum gap between words to keep in same segment, prevents mid-sentence cuts (only for Whisper mode, default: {WORD_MERGE_TOLERANCE_SECONDS}s)",
+    )
+    parser.add_argument(
         "--whisper-model",
         type=str,
         default="large-v2",
-        help="WhisperX model to use (default: large-v2)",
+        help="Whisper model to use for transcription (default: large-v2)",
     )
     parsed = parser.parse_args(args)
 
@@ -719,81 +645,95 @@ def run(args):
     # Determine which mode to use
     use_silence_detection = parsed.silence_threshold is not None
     
-    whisperx_temp_file: Optional[Path] = None
-    
-    try:
-        if use_silence_detection:
-            # SILENCE DETECTION MODE (legacy path)
-            print("🔊 post -tighten: using silence detection mode")
-            
-            threshold_db = parsed.silence_threshold
-            min_silence = parsed.min_silence
-            boundary_padding = parsed.boundary_padding
-            
-            print(
-                f"🎧 post -tighten: detecting silences (threshold={threshold_db:.1f} dB, "
-                f"min_duration={min_silence:.1f}s, padding={boundary_padding:.2f}s, "
-                f"start_edge={leading_padding:.2f}s, end_edge={trailing_padding:.2f}s)."
-            )
-            silences = _detect_silences(rough_video, env, threshold_db, min_silence)
-            print(f"🔍 post -tighten: raw silences detected: {_format_windows(silences)}.")
-
-            long_silences = [
-                window
-                for window in silences
-                if window.duration >= min_silence
-            ]
-            print(f"🪵 post -tighten: silences ≥ {min_silence:.1f}s: {_format_windows(long_silences)}.")
-
-            keep_segments = _build_keep_segments(
-                duration, long_silences, boundary_padding, leading_padding, trailing_padding
-            )
-            
-            print(
-                f"🔊 post -tighten: detected {len(long_silences)} silence window(s) ≥ {min_silence:.1f}s with threshold {threshold_db:.1f} dB."
-            )
-        else:
-            # WHISPERX MODE (default path)
-            print("🎤 post -tighten: using WhisperX mode (detecting speech boundaries)")
-            
-            # Run WhisperX
-            whisperx_result, whisperx_temp_file = _run_whisperx(
-                rough_video, env, model_name=parsed.whisper_model
-            )
-            
-            # Print transcript
-            _print_whisperx_transcript(whisperx_result)
-            
-            # Extract speech segments (these are the parts to KEEP)
-            keep_segments = _extract_speech_segments_from_whisperx(
-                whisperx_result, duration, leading_padding, trailing_padding
-            )
-            
-            # Print info about segments
-            segments_count = len(whisperx_result.get("segments", []))
-            print(f"🎤 post -tighten: detected {segments_count} speech segment(s) from WhisperX.")
-
-        # Common output for both modes
-        formatted_segments = (
-            ", ".join(
-                f"[{start:.2f}s → {end:.2f}s | {(end-start):.2f}s]" for start, end in keep_segments
-            )
-            if keep_segments
-            else "none"
-        )
-        print(f"🎬 post -tighten: segments to keep: {formatted_segments}.")
+    if use_silence_detection:
+        # SILENCE DETECTION MODE (legacy path)
+        print("🔊 post -tighten: using silence detection mode")
+        
+        threshold_db = parsed.silence_threshold
+        min_silence = parsed.min_silence
+        boundary_padding = parsed.boundary_padding
         
         print(
-            f"✂️  post -tighten: keeping {len(keep_segments)} segment(s) totalling {_segments_total(keep_segments):.1f}s out of {duration:.1f}s."
+            f"🎧 post -tighten: detecting silences (threshold={threshold_db:.1f} dB, "
+            f"min_duration={min_silence:.1f}s, padding={boundary_padding:.2f}s, "
+            f"start_edge={leading_padding:.2f}s, end_edge={trailing_padding:.2f}s)."
         )
+        silences = _detect_silences(rough_video, env, threshold_db, min_silence)
+        print(f"🔍 post -tighten: raw silences detected: {_format_windows(silences)}.")
 
-        _encode_tightened(rough_video, tightened_video, keep_segments, env)
+        long_silences = [
+            window
+            for window in silences
+            if window.duration >= min_silence
+        ]
+        print(f"🪵 post -tighten: silences ≥ {min_silence:.1f}s: {_format_windows(long_silences)}.")
 
+        keep_segments = _build_keep_segments(
+            duration, long_silences, boundary_padding, leading_padding, trailing_padding
+        )
+        
         print(
-            f"✅ post -tighten: wrote tightened cut to '{tightened_video.name}'."
+            f"🔊 post -tighten: detected {len(long_silences)} silence window(s) ≥ {min_silence:.1f}s with threshold {threshold_db:.1f} dB."
         )
-    finally:
-        # Clean up temporary WhisperX file
-        if whisperx_temp_file is not None and whisperx_temp_file.exists():
-            print(f"🧹 post -tighten: cleaning up temporary file '{whisperx_temp_file}'.")
-            whisperx_temp_file.unlink()
+    else:
+        # WHISPER MODE (default path using stable-ts)
+        print("🎤 post -tighten: using Whisper mode (detecting speech boundaries with stable-ts)")
+        
+        # Check if we have a cached transcription
+        silence_json = env.directory / "silence.json"
+        words = None
+        
+        if silence_json.exists():
+            if env.auto_confirm:
+                reuse = True
+                print(f"♻️  post -tighten: found existing '{silence_json.name}', reusing it (--yes mode).")
+            else:
+                response = input(f"♻️  post -tighten: found existing '{silence_json.name}'. Reuse it? [Y/n]: ").strip().lower()
+                reuse = response not in ("n", "no")
+            
+            if reuse:
+                try:
+                    with open(silence_json, 'r') as f:
+                        words = json.load(f)
+                    print(f"✅ post -tighten: loaded {len(words)} words from '{silence_json.name}'.")
+                except (json.JSONDecodeError, IOError) as e:
+                    print(f"⚠️  post -tighten: failed to load '{silence_json.name}': {e}")
+                    print(f"⏳ post -tighten: running fresh transcription...")
+                    words = None
+        
+        # Run stable-ts if we don't have cached words
+        if words is None:
+            words = _run_stable_whisper(
+                rough_video, env, model_name=parsed.whisper_model
+            )
+        
+        # Print transcript
+        _print_transcript(words)
+        
+        # Extract speech segments (these are the parts to KEEP)
+        keep_segments = _extract_speech_segments_from_words(
+            words, duration, leading_padding, trailing_padding, merge_tolerance=parsed.merge_tolerance
+        )
+        
+        print(f"🎤 post -tighten: detected {len(words)} word(s) from Whisper transcription.")
+        print(f"🔗 post -tighten: merging words within {parsed.merge_tolerance:.2f}s to prevent mid-sentence cuts.")
+
+    # Common output for both modes
+    formatted_segments = (
+        ", ".join(
+            f"[{start:.2f}s → {end:.2f}s | {(end-start):.2f}s]" for start, end in keep_segments
+        )
+        if keep_segments
+        else "none"
+    )
+    print(f"🎬 post -tighten: segments to keep: {formatted_segments}.")
+    
+    print(
+        f"✂️  post -tighten: keeping {len(keep_segments)} segment(s) totalling {_segments_total(keep_segments):.1f}s out of {duration:.1f}s."
+    )
+
+    _encode_tightened(rough_video, tightened_video, keep_segments, env)
+
+    print(
+        f"✅ post -tighten: wrote tightened cut to '{tightened_video.name}'."
+    )
