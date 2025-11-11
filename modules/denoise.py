@@ -35,6 +35,33 @@ def _ensure_denoiser(env: StageEnvironment) -> None:
         )
 
 
+def _get_audio_sample_rate(video_path: Path, env: StageEnvironment) -> int:
+    """Get the sample rate of the audio stream in the video."""
+    cmd = [
+        "ffprobe",
+        "-v",
+        "error",
+        "-select_streams",
+        "a:0",
+        "-show_entries",
+        "stream=sample_rate",
+        "-of",
+        "default=noprint_wrappers=1:nokey=1",
+        str(video_path),
+    ]
+    
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        env.abort(f"Failed to get audio sample rate: {result.stderr}")
+    
+    try:
+        return int(result.stdout.strip())
+    except ValueError:
+        # Default to 48kHz if we can't detect it
+        print("⚠️  post -denoise: couldn't detect sample rate, defaulting to 48000Hz")
+        return 48000
+
+
 def _extract_audio(video_path: Path, audio_path: Path, env: StageEnvironment) -> None:
     """Extract audio from video file to WAV format."""
     print(f"🎵 post -denoise: extracting audio from '{video_path.name}'...")
@@ -119,6 +146,36 @@ def _denoise_audio(input_audio: Path, output_audio: Path, env: StageEnvironment)
         env.abort(f"Denoising failed: {e}\n{traceback.format_exc()}")
 
 
+def _resample_audio(
+    input_audio: Path,
+    output_audio: Path,
+    target_sample_rate: int,
+    env: StageEnvironment,
+) -> None:
+    """Resample audio to a target sample rate."""
+    print(f"🔄 post -denoise: resampling audio to {target_sample_rate}Hz...")
+    
+    cmd = [
+        "ffmpeg",
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-nostdin",
+        "-y",
+        "-i",
+        str(input_audio),
+        "-ar",
+        str(target_sample_rate),
+        "-acodec",
+        "pcm_s16le",
+        str(output_audio),
+    ]
+    
+    result = subprocess.run(cmd, capture_output=True)
+    if result.returncode != 0:
+        env.abort(f"Failed to resample audio: {result.stderr.decode()}")
+
+
 def _replace_audio_in_video(
     video_path: Path,
     audio_path: Path,
@@ -158,11 +215,31 @@ def _replace_audio_in_video(
         env.abort(f"Failed to replace audio: {result.stderr.decode()}")
 
 
+def _generate_output_filename(input_path: Path) -> Path:
+    """Generate output filename with '-denoised' before the last tag."""
+    stem = input_path.stem  # filename without extension
+    suffix = input_path.suffix  # .mp4, .mov, etc.
+    
+    # Split by hyphens to find the last tag
+    parts = stem.split('-')
+    
+    if len(parts) > 1:
+        # Insert '-denoised' before the last tag
+        # e.g., "video-rough" -> "video-denoised-rough"
+        parts.insert(-1, 'denoised')
+        new_stem = '-'.join(parts)
+    else:
+        # No hyphens, just append '-denoised'
+        new_stem = f"{stem}-denoised"
+    
+    return input_path.parent / f"{new_stem}{suffix}"
+
+
 def run(args):
     """
     Remove background noise from audio in a video file using Facebook's denoiser.
     
-    This command processes a specific file and rewrites it with denoised audio.
+    This command processes a specific file and creates a new denoised version.
     The video stream is preserved without re-encoding.
     
     Dependencies:
@@ -171,10 +248,10 @@ def run(args):
     
     Usage:
         post -denoise <video_file>
-        post -denoise <video_file> --yes  # Skip confirmation
     
     Output:
-        - Overwrites the input file with the denoised version after confirmation.
+        - Creates a new file with '-denoised' inserted before the last tag.
+        - Example: 'video-rough.mp4' -> 'video-denoised-rough.mp4'
     """
     parser = argparse.ArgumentParser(
         prog="post -denoise",
@@ -185,12 +262,6 @@ def run(args):
         "file",
         type=str,
         help="Path to the video file to denoise.",
-    )
-    parser.add_argument(
-        "--yes",
-        "-y",
-        action="store_true",
-        help="Automatically overwrite the input file without confirmation.",
     )
     
     parsed = parser.parse_args(args)
@@ -206,11 +277,19 @@ def run(args):
         print(f"❌ post -denoise: '{input_file}' is not a file.")
         raise SystemExit(1)
     
+    # Generate output filename
+    output_file = _generate_output_filename(input_file)
+    
+    # Check if output file already exists
+    if output_file.exists():
+        print(f"❌ post -denoise: output file '{output_file.name}' already exists.")
+        raise SystemExit(1)
+    
     # Create environment for safety checks
     env = StageEnvironment.create(
         stage="denoise",
         directory=str(input_file.parent),
-        auto_confirm=parsed.yes,
+        auto_confirm=True,
     )
     
     # Check for required tools
@@ -218,18 +297,12 @@ def run(args):
     _ensure_tool("ffprobe", env)
     _ensure_denoiser(env)
     
-    # Confirm overwrite
-    if not env.auto_confirm:
-        answer = input(
-            f"post -denoise: This will overwrite '{input_file.name}' with a denoised version. Continue? [y/N]: "
-        ).strip().lower()
-        if answer not in {"y", "yes"}:
-            print("❌ post -denoise: operation cancelled by user.")
-            raise SystemExit(0)
-    else:
-        print(f"⚠️  post -denoise: will overwrite '{input_file.name}' via --yes.")
-    
     print(f"🔍 post -denoise: processing '{input_file.name}'...")
+    print(f"📝 post -denoise: will create '{output_file.name}'")
+    
+    # Get the original audio sample rate to preserve sync
+    original_sample_rate = _get_audio_sample_rate(input_file, env)
+    print(f"📊 post -denoise: original audio sample rate: {original_sample_rate}Hz")
     
     # Use a temporary directory for intermediate files
     with tempfile.TemporaryDirectory() as temp_dir:
@@ -243,13 +316,17 @@ def run(args):
         denoised_audio = temp_path / "denoised.wav"
         _denoise_audio(extracted_audio, denoised_audio, env)
         
-        # Step 3: Replace audio in video
-        output_video = temp_path / "output.mp4"
-        _replace_audio_in_video(input_file, denoised_audio, output_video, env)
+        # Step 3: Resample back to original sample rate (prevents sync drift)
+        resampled_audio = temp_path / "resampled.wav"
+        _resample_audio(denoised_audio, resampled_audio, original_sample_rate, env)
         
-        # Step 4: Replace the original file
+        # Step 4: Replace audio in video
+        output_video = temp_path / "output.mp4"
+        _replace_audio_in_video(input_file, resampled_audio, output_video, env)
+        
+        # Step 5: Save to new file
         print(f"💾 post -denoise: saving denoised video...")
-        shutil.move(str(output_video), str(input_file))
+        shutil.move(str(output_video), str(output_file))
     
-    print(f"✅ post -denoise: successfully denoised '{input_file.name}'.")
+    print(f"✅ post -denoise: successfully created '{output_file.name}'.")
 

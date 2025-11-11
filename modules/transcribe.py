@@ -5,7 +5,6 @@ try:
 except ImportError:
     from common import StageEnvironment, build_cli_parser
 
-
 def run(args):
     """
     Dependencies:

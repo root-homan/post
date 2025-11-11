@@ -40,27 +40,29 @@ except ImportError:
     from video_editing import concatenate_segments
 
 # dB floor below which audio counts as silence; tune to your mic noise.
-SILENCE_THRESHOLD_DB = -24.0
-# SILENCE_THRESHOLD_DB = -17.0 (for the wireless go 3 mic).
+# HIGHER absolute value, the LESS aggressively it cuts.
+# SILENCE_THRESHOLD_DB = -32.0
+SILENCE_THRESHOLD_DB = -22.0 # (for the wireless go 3 mic).
 
 # Minimum silence length (seconds) before we consider trimming it out.
 MIN_SILENCE_DURATION_SECONDS = 0.5
 # Extra audio to keep around each internal silence boundary (negative tightens).
-BOUNDARY_PADDING_SECONDS = -0.1
+BOUNDARY_PADDING_SECONDS = 0.0
 
 # Buffer before the first segment so the intro breathes a bit.
-LEADING_EDGE_PADDING_SECONDS = 1
+LEADING_EDGE_PADDING_SECONDS = 0.2
 # Buffer after the last segment so the outro isn't abruptly chopped.
-TRAILING_EDGE_PADDING_SECONDS = 5
+TRAILING_EDGE_PADDING_SECONDS = 3
 # Maximum gap between words to keep them in the same segment (prevents mid-sentence cuts).
 WORD_MERGE_TOLERANCE_SECONDS = 0.7
+# Audio further than this distance from any word will be cut (seconds).
+WORD_PROXIMITY_THRESHOLD_SECONDS = 1
 
 # Encoding configuration tuned for Apple Silicon hardware acceleration.
 AUDIO_BITRATE = "192k"
 VIDEOTOOLBOX_CODEC = "h264_videotoolbox"
 VIDEOTOOLBOX_GLOBAL_QUALITY = 70
 VIDEOTOOLBOX_PIX_FMT = "yuv420p"
-
 
 @dataclass(frozen=True)
 class SilenceWindow:
@@ -286,26 +288,13 @@ def _run_stable_whisper(
     # Note: MPS has numerical stability issues with Whisper, so we use CPU on macOS
     device = "cuda" if torch.cuda.is_available() else "cpu"
     
-    print(f"\n{'='*80}")
-    print(f"🎤 STABLE-TS TRANSCRIPTION")
-    print(f"{'='*80}")
-    print(f"  Device: {device.upper()}")
-    print(f"  Model: {model_name}")
-    print(f"  Source: {path.name}")
-    print(f"{'='*80}\n")
+    print(f"⏳ Running Whisper transcription (model: {model_name}, device: {device})...", flush=True)
     
-    # Load model
-    print(f"⏳ [1/3] Loading Whisper model '{model_name}'...", flush=True)
+    # Load model and transcribe
     model = stable_whisper.load_model(model_name, device=device)
-    print(f"✅ [1/3] Model loaded successfully.\n", flush=True)
-    
-    # Transcribe with word-level timestamps
-    print(f"⏳ [2/3] Transcribing audio with word-level precision (this may take a minute)...", flush=True)
     result = model.transcribe(str(path), word_timestamps=True)
-    print(f"✅ [2/3] Transcription complete.\n", flush=True)
     
     # Extract words with timestamps
-    print(f"⏳ [3/3] Extracting word-level timestamps...", flush=True)
     words = []
     for segment in result.segments:
         for word in segment.words:
@@ -314,15 +303,13 @@ def _run_stable_whisper(
                 'start': word.start,
                 'end': word.end
             })
-    print(f"✅ [3/3] Extracted {len(words)} words.\n", flush=True)
     
     # Save to persistent file in the working directory
     output_path = env.directory / "silence.json"
     with open(output_path, 'w') as f:
         json.dump(words, f, indent=2)
     
-    print(f"💾 Saved transcription to: {output_path.name}")
-    print(f"{'='*80}\n")
+    print(f"✅ Transcribed {len(words)} words\n")
     
     return words
 
@@ -447,173 +434,405 @@ def _get_words_in_segment(
     return f'"{phrase}"'
 
 
-def _validate_segments_with_silence(
-    segments: List[Tuple[float, float]],
+def _has_word_in_range(
     words: List[dict],
-    silences: Sequence[SilenceWindow],
-    duration: float,
-    boundary_padding: float = -0.1,
-    trailing_padding: float = 2.0,
-    search_tolerance: float = 0.5,
-) -> List[Tuple[float, float]]:
+    start: float,
+    end: float,
+    tolerance: float = 0.05,
+) -> Tuple[bool, List[dict]]:
     """
-    Adjust Whisper-based segments to cut at actual silence points in the waveform.
-    
-    This ensures we never cut in the middle of audio - we only cut where the
-    waveform actually falls to silence.
-    
-    Args:
-        segments: Initial segments from Whisper word grouping
-        words: Original word list from Whisper (for displaying text)
-        silences: Detected silence windows from waveform analysis
-        duration: Total video duration
-        boundary_padding: Padding to apply at cut points (negative = tighter)
-        trailing_padding: Extra padding for the last segment
-        search_tolerance: How far to search for silence around boundaries
+    Check if any words fall within a time range (with tolerance).
     
     Returns:
-        Adjusted segments that cut at actual silence points
+        (has_word, words_in_range)
     """
+    words_in_range = []
+    for word in words:
+        word_start = word.get("start", 0)
+        word_end = word.get("end", 0)
+        # Check if word overlaps with the range (with tolerance)
+        if word_end + tolerance > start and word_start - tolerance < end:
+            words_in_range.append(word)
+    
+    return len(words_in_range) > 0, words_in_range
+
+
+def _detect_loud_regions(
+    path: Path,
+    env: StageEnvironment,
+    loud_threshold_db: float = -15.0,
+    min_duration: float = 0.05,
+) -> List[Tuple[float, float]]:
+    """
+    Detect loud regions (spikes) in the audio that are above a threshold.
+    
+    These might be words, or they might be non-word noises (pencil hits, etc).
+    
+    Args:
+        path: Path to video file
+        env: Stage environment
+        loud_threshold_db: Threshold above which audio is considered "loud"
+        min_duration: Minimum duration of a loud region
+    
+    Returns:
+        List of (start, end) tuples for loud regions
+    """
+    # Use silencedetect in reverse - detect "loud" regions by using a higher threshold
+    # and then inverting the result
+    
+    # We'll use silencedetect to find everything BELOW the loud threshold,
+    # then invert to find everything ABOVE it
+    detect_filter = f"silencedetect=noise={loud_threshold_db}dB:d={min_duration}"
+    
+    process = subprocess.Popen(
+        [
+            "ffmpeg",
+            "-hide_banner",
+            "-nostdin",
+            "-threads", "0",
+            "-i",
+            str(path),
+            "-vn",
+            "-af",
+            detect_filter,
+            "-f",
+            "null",
+            "-",
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    
+    try:
+        stdout, stderr = process.communicate()
+        return_code = process.returncode
+    except KeyboardInterrupt:
+        _terminate_process(process)
+        raise
+    
+    if return_code != 0:
+        # Silently fail if this doesn't work
+        return []
+    
+    duration = _probe_duration(path, env)
+    quiet_regions = _parse_silences(stderr, env, duration)
+    
+    # Invert: find loud regions (everything NOT in quiet regions)
+    loud_regions: List[Tuple[float, float]] = []
+    cursor = 0.0
+    
+    for quiet in quiet_regions:
+        if quiet.start > cursor:
+            loud_regions.append((cursor, quiet.start))
+        cursor = quiet.end
+    
+    if cursor < duration:
+        loud_regions.append((cursor, duration))
+    
+    return loud_regions
+
+
+def _find_non_word_spikes(
+    loud_regions: List[Tuple[float, float]],
+    words: List[dict],
+    segments: List[Tuple[float, float]],
+    proximity_threshold: float = WORD_PROXIMITY_THRESHOLD_SECONDS,
+) -> List[Tuple[float, float, str]]:
+    """
+    Find loud regions that are NOT near any words (potential noise spikes).
+    
+    Args:
+        loud_regions: List of loud audio regions
+        words: Word list from Whisper
+        segments: Segments we're keeping
+        proximity_threshold: How close a loud region must be to a word to be considered speech
+    
+    Returns:
+        List of (start, end, reason) tuples for non-word spikes to remove
+    """
+    non_word_spikes = []
+    
+    for loud_start, loud_end in loud_regions:
+        loud_duration = loud_end - loud_start
+        
+        # Skip very long loud regions (these are likely speech)
+        if loud_duration > 2.0:
+            continue
+        
+        # Check if this loud region is within any of our kept segments
+        in_segment = False
+        for seg_start, seg_end in segments:
+            if loud_end > seg_start and loud_start < seg_end:
+                in_segment = True
+                break
+        
+        if not in_segment:
+            continue
+        
+        # Check if any words are near this loud region
+        has_nearby_word = False
+        for word in words:
+            word_start = word.get("start", 0)
+            word_end = word.get("end", 0)
+            
+            # Check if word is within proximity threshold
+            distance = max(0, max(loud_start - word_end, word_start - loud_end))
+            if distance <= proximity_threshold:
+                has_nearby_word = True
+                break
+        
+        if not has_nearby_word:
+            # This is a spike with no nearby words - probably noise
+            reason = f"isolated {loud_duration:.2f}s spike"
+            non_word_spikes.append((loud_start, loud_end, reason))
+    
+    return non_word_spikes
+
+
+def _build_segments_from_silences(
+    duration: float,
+    silences: Sequence[SilenceWindow],
+    words: List[dict],
+    boundary_padding: float,
+    leading_padding: float,
+    trailing_padding: float,
+    path: Optional[Path] = None,
+    env: Optional[StageEnvironment] = None,
+    detect_spikes: bool = False,
+    check_words: bool = False,
+) -> List[Tuple[float, float]]:
+    """
+    Build segments by cutting at silences, then validate against words.
+    
+    This is the PRIMARY approach: cut at silences, then check if we're losing words.
+    If we are, adjust to preserve them.
+    
+    Args:
+        duration: Total video duration
+        silences: Detected silence windows from waveform
+        words: Word list from Whisper transcription
+        boundary_padding: Padding at cut points (negative = tighter)
+        leading_padding: Padding before first segment
+        trailing_padding: Padding after last segment
+    
+    Returns:
+        Final segments that preserve all words and cut at silences
+    """
+    
+    # Step 1: Build list of what we're CUTTING (the silence regions with boundary padding)
+    cut_regions: List[Tuple[float, float]] = []
+    
+    for silence in silences:
+        # With boundary_padding = -0.1, we cut TIGHTER (remove more)
+        # silence [10.0 → 12.0] with boundary_padding -0.1 means:
+        # - Cut from (10.0 + (-0.1)) = 9.9 to (12.0 - (-0.1)) = 12.1
+        # This is because negative padding means "cut into the non-silence"
+        cut_start = silence.start + boundary_padding  # For -0.1: start + (-0.1) = start - 0.1
+        cut_end = silence.end - boundary_padding      # For -0.1: end - (-0.1) = end + 0.1
+        
+        cut_start = max(0.0, cut_start)
+        cut_end = min(duration, cut_end)
+        
+        if cut_end > cut_start + 0.01:
+            cut_regions.append((cut_start, cut_end))
+    
+    
+    # Step 2: Build initial segments by inverting the cut regions
+    segments: List[Tuple[float, float]] = []
+    cursor = 0.0
+    
+    for cut_start, cut_end in cut_regions:
+        # Keep the audio before this cut
+        if cut_start > cursor:
+            segments.append((cursor, cut_start))
+        
+        # Move cursor to after this cut
+        cursor = max(cursor, cut_end)
+    
+    # Keep anything after the last cut
+    if cursor < duration:
+        segments.append((cursor, duration))
+    
+    # Filter out very short segments
+    segments = [(start, end) for start, end in segments if end - start > 0.01]
+    
     if not segments:
-        return [(0.0, duration)]
+        segments = [(0.0, duration)]
     
-    adjusted = []
-    
-    print(f"\n{'='*88}")
-    print(f"🌊 WAVEFORM VALIDATION")
-    print(f"{'='*88}")
-    print(f"Validating {len(segments)} segment(s) against waveform silence...\n")
+    # Step 3: Apply leading/trailing padding
+    validated_segments = []
+    words_saved_count = 0
+    spikes_removed_count = 0
     
     for i, (seg_start, seg_end) in enumerate(segments):
         is_first = (i == 0)
         is_last = (i == len(segments) - 1)
         
-        original_start = seg_start
-        original_end = seg_end
+        # Apply leading/trailing padding
+        if is_first:
+            seg_start = max(0.0, seg_start - leading_padding)
+        if is_last:
+            seg_end = min(duration, seg_end + trailing_padding)
         
-        # Get the phrase for this segment
-        phrase = _get_words_in_segment(words, seg_start, seg_end)
-        
-        # Track validation status
-        start_validated = is_first  # First segment start is always OK
-        end_validated = False
-        start_adjusted = False
-        end_adjusted = False
-        
-        # For segment start: find where silence actually ends before this segment
-        if not is_first:
-            silence_end = _find_nearest_silence_edge(
-                seg_start, silences, direction="before", max_search=search_tolerance
-            )
-            if silence_end is not None:
-                adjusted_start = silence_end - boundary_padding
-                if abs(adjusted_start - seg_start) > 0.05:
-                    start_adjusted = True
-                seg_start = adjusted_start
-                start_validated = True
-            else:
-                start_validated = False
-        
-        # For segment end: find where silence actually starts after this segment
-        if not is_last:
-            silence_start = _find_nearest_silence_edge(
-                seg_end, silences, direction="after", max_search=search_tolerance
-            )
-            if silence_start is not None:
-                adjusted_end = silence_start + boundary_padding
-                if abs(adjusted_end - seg_end) > 0.05:
-                    end_adjusted = True
-                seg_end = adjusted_end
-                end_validated = True
-            else:
-                end_validated = False
-        else:
-            # Last segment - search further forward
-            silence_start = _find_nearest_silence_edge(
-                seg_end, silences, direction="after", 
-                max_search=trailing_padding + search_tolerance
-            )
-            if silence_start is not None:
-                adjusted_end = min(silence_start + boundary_padding + trailing_padding, duration)
-                if abs(adjusted_end - seg_end) > 0.05:
-                    end_adjusted = True
-                seg_end = adjusted_end
-                end_validated = True
-            else:
-                # No silence found - extend anyway
-                adjusted_end = min(seg_end + trailing_padding, duration)
-                end_adjusted = True
-                seg_end = adjusted_end
-                end_validated = False
-        
-        # Ensure segment is valid
-        seg_start = _clamp(seg_start, 0.0, duration)
-        seg_end = _clamp(seg_end, seg_start + 0.01, duration)
-        
-        adjusted.append((seg_start, seg_end))
-        
-        # Print detailed segment info
-        print(f"Segment {i+1}:")
-        print(f"  Phrase: {phrase}")
-        print(f"  Time:   [{original_start:.2f}s → {original_end:.2f}s]", end="")
-        if start_adjusted or end_adjusted:
-            print(f" → [{seg_start:.2f}s → {seg_end:.2f}s]")
-        else:
-            print()
-        
-        # Validation status
-        if is_first and is_last:
-            status = "✅ Only segment (no cuts needed)"
-        elif is_first:
-            if end_validated:
-                status = "✅ Waveform agrees (end)" if not end_adjusted else "📍 Adjusted to silence (end)"
-            else:
-                status = "⚠️  No silence found for end cut"
-        elif is_last:
-            if start_validated:
-                if end_validated:
-                    status = "✅ Waveform agrees (start+end)" if not (start_adjusted or end_adjusted) else "📍 Adjusted to silence (start+end)"
-                else:
-                    status_start = "✅" if not start_adjusted else "📍"
-                    status = f"{status_start} Start validated, end extended (+{trailing_padding}s)"
-            else:
-                status = "⚠️  No silence found for start cut"
-        else:
-            if start_validated and end_validated:
-                if not start_adjusted and not end_adjusted:
-                    status = "✅ Waveform agrees"
-                else:
-                    status = "📍 Adjusted to silence"
-            elif start_validated:
-                status = "📍 Start validated, ⚠️  end not validated"
-            elif end_validated:
-                status = "⚠️  Start not validated, 📍 end validated"
-            else:
-                status = "⚠️  No silence found for cuts"
-        
-        print(f"  Status: {status}")
-        print()
+        validated_segments.append((seg_start, seg_end))
     
-    print(f"{'='*88}")
-    print(f"✅ Waveform validation complete.\n")
-    return adjusted
+    # Step 4: Find additional regions to cut within kept segments (optional)
+    if check_words:
+        # Build "word zones" - regions within proximity_threshold of any word
+        word_proximity_threshold = WORD_PROXIMITY_THRESHOLD_SECONDS
+        word_zones: List[Tuple[float, float]] = []
+        
+        for word in words:
+            word_start = word.get("start", 0)
+            word_end = word.get("end", 0)
+            # Create a zone around each word
+            zone_start = max(0.0, word_start - word_proximity_threshold)
+            zone_end = min(duration, word_end + word_proximity_threshold)
+            word_zones.append((zone_start, zone_end))
+        
+        # Merge overlapping word zones
+        word_zones.sort(key=lambda x: x[0])
+        merged_zones: List[Tuple[float, float]] = []
+        for zone_start, zone_end in word_zones:
+            if merged_zones and zone_start <= merged_zones[-1][1]:
+                prev_start, prev_end = merged_zones[-1]
+                merged_zones[-1] = (prev_start, max(prev_end, zone_end))
+            else:
+                merged_zones.append((zone_start, zone_end))
+        
+        # Step 5: For each kept segment, only keep the parts that overlap with word zones
+        final_segments: List[Tuple[float, float]] = []
+        total_additional_cut = 0.0
+        
+        for seg_start, seg_end in validated_segments:
+            # Find which parts of this segment overlap with word zones
+            for zone_start, zone_end in merged_zones:
+                # Calculate overlap
+                overlap_start = max(seg_start, zone_start)
+                overlap_end = min(seg_end, zone_end)
+                
+                if overlap_end > overlap_start:
+                    final_segments.append((overlap_start, overlap_end))
+            
+            # Calculate how much we're cutting from this segment
+            segment_duration = seg_end - seg_start
+            kept_duration = sum(min(e, seg_end) - max(s, seg_start) 
+                               for s, e in final_segments 
+                               if e > seg_start and s < seg_end)
+            total_additional_cut += segment_duration - kept_duration
+        
+        if total_additional_cut > 0.1:
+            print(f"✅ Additional cuts: {total_additional_cut:.2f}s removed (regions >{word_proximity_threshold:.1f}s from any word)")
+        
+        # Merge any overlapping segments
+        final_segments.sort(key=lambda x: x[0])
+        merged_segments: List[Tuple[float, float]] = []
+        for seg_start, seg_end in final_segments:
+            if merged_segments and seg_start <= merged_segments[-1][1]:
+                prev_start, prev_end = merged_segments[-1]
+                merged_segments[-1] = (prev_start, max(prev_end, seg_end))
+            else:
+                merged_segments.append((seg_start, seg_end))
+        
+        final_segments = merged_segments
+    else:
+        # No word checking - just use validated segments as-is
+        final_segments = validated_segments
+    
+    # Step 4: Look for spikes that aren't words (optional)
+    if detect_spikes and path is not None and env is not None:
+        print(f"\n{'='*88}")
+        print(f"🔊 DETECTING NON-WORD SPIKES")
+        print(f"{'='*88}\n")
+        print(f"Analyzing audio for loud spikes that aren't near words...\n")
+        
+        # Detect loud regions in the audio
+        loud_regions = _detect_loud_regions(path, env, loud_threshold_db=-15.0, min_duration=0.05)
+        
+        if loud_regions:
+            print(f"Found {len(loud_regions)} loud region(s) in audio.")
+            
+            # Find which loud regions are NOT near any words
+            non_word_spikes = _find_non_word_spikes(
+                loud_regions, words, final_segments, proximity_threshold=WORD_PROXIMITY_THRESHOLD_SECONDS
+            )
+            
+            if non_word_spikes:
+                print(f"\n⚠️  NON-WORD SPIKES DETECTED (WILL BE REMOVED):")
+                for i, (spike_start, spike_end, reason) in enumerate(non_word_spikes, 1):
+                    spike_duration = spike_end - spike_start
+                    print(f"  Spike #{i}:")
+                    print(f"    Rough video timestamp: [{spike_start:.2f}s → {spike_end:.2f}s]")
+                    print(f"    ⚠️  CHECK THIS RANGE IN YOUR ROUGH VIDEO TO VERIFY")
+                    print(f"    Duration: {spike_duration:.2f}s")
+                    print(f"    Reason: {reason} with no nearby words")
+                    print(f"    Action: This will be CUT from the final video")
+                    print(f"    Verification: Should be a noise (bump, pencil hit, etc), NOT speech\n")
+                
+                # Remove these spikes from our segments
+                # This requires splitting segments that contain spikes
+                segments_after_spike_removal = []
+                for seg_start, seg_end in final_segments:
+                    current_segments = [(seg_start, seg_end)]
+                    
+                    # For each spike, split the segment if it contains the spike
+                    for spike_start, spike_end, _ in non_word_spikes:
+                        new_segments = []
+                        for cur_start, cur_end in current_segments:
+                            if spike_end <= cur_start or spike_start >= cur_end:
+                                # Spike doesn't overlap this segment
+                                new_segments.append((cur_start, cur_end))
+                            elif spike_start <= cur_start and spike_end >= cur_end:
+                                # Spike completely covers this segment - remove it
+                                continue
+                            elif spike_start > cur_start and spike_end < cur_end:
+                                # Spike is in the middle - split into two segments
+                                new_segments.append((cur_start, spike_start))
+                                new_segments.append((spike_end, cur_end))
+                            elif spike_start <= cur_start:
+                                # Spike overlaps start
+                                new_segments.append((spike_end, cur_end))
+                            else:
+                                # Spike overlaps end
+                                new_segments.append((cur_start, spike_start))
+                        current_segments = new_segments
+                    
+                    segments_after_spike_removal.extend(current_segments)
+                
+                final_segments = segments_after_spike_removal
+                spikes_removed_count = len(non_word_spikes)
+            else:
+                print(f"✅ All loud regions are near words - no non-word spikes to remove\n")
+        else:
+            print(f"No loud regions detected.\n")
+    
+    # Clean up segments
+    final_segments = [(max(0.0, s), min(duration, e)) for s, e in final_segments]
+    final_segments = [(s, e) for s, e in final_segments if e > s + 0.01]
+    
+    if not final_segments:
+        final_segments = [(0.0, duration)]
+    
+    # Calculate final duration
+    final_duration = sum(end - start for start, end in final_segments)
+    total_cut = duration - final_duration
+    
+    print(f"\n📊 FINAL:")
+    print(f"    Original duration: {duration:.2f}s")
+    print(f"    Total cut: {total_cut:.2f}s ({total_cut/duration*100:.1f}%)")
+    print(f"    Remaining: {final_duration:.2f}s\n")
+    
+    return final_segments
 
 
 def _print_transcript(words: List[dict]) -> None:
     """Print the full transcript from word list in a readable format."""
     if not words:
-        print("📄 post -tighten: no transcript detected.")
+        print("📄 No transcript detected.")
         return
     
-    print(f"\n📄 post -tighten: words detected → {len(words)} words")
-    print("=" * 80)
-    
-    # Build transcript from words
-    transcript_words = [w.get("word", "").strip() for w in words]
-    transcript_text = " ".join(transcript_words)
-    print(transcript_text)
-    print("=" * 80)
-    print()
+    print(f"📄 Words detected: {len(words)} words\n")
 
 
 def _build_keep_segments(
@@ -764,17 +983,34 @@ def _run_ffmpeg_with_progress(
 
 def run(args):
     """
+    Remove silences from video using silence threshold detection.
+    
+    Algorithm (default):
+        1. Detect silences in the audio waveform using threshold
+        2. Cut at silence boundaries with boundary padding
+    
+    With --checkwords flag:
+        1. Detect silences in the audio waveform using threshold
+        2. Use Whisper transcription to identify all words
+        3. Cut additional regions that are far from any words (>1s away)
+    
+    This ensures:
+        - Cuts are made at actual silence points in the waveform
+        - With --checkwords: additional cutting of non-speech audio
+    
     Dependencies:
         - Requires a single rough cut named `<title>-<take_id>-rough.mp4` in the working directory.
+    
     Failure behaviour:
         - Exits without modifying files when the rough cut is absent or when more than one candidate rough cut exists.
         - Prompts before overwriting `<title>-<take_id>-rough-tight.mp4` unless `--yes` is specified.
+    
     Output:
         - Generates `<title>-<take_id>-rough-tight.mp4`, i.e., the same base filename with `-tight` appended before `.mp4`.
     """
     parser = build_cli_parser(
         stage="tighten",
-        summary="Remove leading, trailing, and mid-take silences from a rough cut using Whisper (default) or silence detection.",
+        summary="Remove silences from rough cut by detecting silence thresholds and preserving all words identified by Whisper.",
     )
     parser.add_argument(
         "--silence-threshold",
@@ -823,6 +1059,18 @@ def run(args):
         type=str,
         default="large-v2",
         help="Whisper model to use for transcription (default: large-v2)",
+    )
+    parser.add_argument(
+        "--detect-spikes",
+        action="store_true",
+        default=False,
+        help="Enable detection and removal of non-word audio spikes (e.g., pencil hits, bumps)",
+    )
+    parser.add_argument(
+        "--checkwords",
+        action="store_true",
+        default=False,
+        help="Enable additional cutting of audio regions far from words (uses Whisper transcription)",
     )
     parsed = parser.parse_args(args)
 
@@ -889,81 +1137,69 @@ def run(args):
         )
     else:
         # WHISPER MODE (default path using stable-ts)
-        print("🎤 post -tighten: using Whisper mode (detecting speech boundaries with stable-ts)")
+        # Step 1: Run silence detection FIRST (this is the primary cutting method)
+        # Use the MIN_SILENCE_DURATION_SECONDS constant from the top of the file
+        # This should be aggressive since Whisper will protect any words found in cut regions
+        min_silence_duration = MIN_SILENCE_DURATION_SECONDS
+        threshold_db = SILENCE_THRESHOLD_DB
+        boundary_padding = parsed.boundary_padding
         
-        # Check if we have a cached transcription
-        silence_json = env.directory / "silence.json"
-        words = None
+        print(f"🔊 Detecting silences...")
+        print(f"    Threshold: {threshold_db:.1f} dB, Min duration: {min_silence_duration:.2f}s\n")
         
-        if silence_json.exists():
-            if env.auto_confirm:
-                reuse = True
-                print(f"♻️  post -tighten: found existing '{silence_json.name}', reusing it (--yes mode).")
-            else:
-                response = input(f"♻️  post -tighten: found existing '{silence_json.name}'. Reuse it? [Y/n]: ").strip().lower()
-                reuse = response not in ("n", "no")
+        silences = _detect_silences(rough_video, env, threshold_db, min_silence_duration)
+        
+        # Calculate silence statistics
+        total_silence_duration = sum(s.duration for s in silences)
+        remaining_duration = duration - total_silence_duration
+        
+        print(f"✅ Silences detected: {len(silences)} region(s)")
+        print(f"    Cutting: {total_silence_duration:.2f}s")
+        print(f"    Remaining: {remaining_duration:.2f}s\n")
+        
+        # Step 2: Get Whisper transcription to identify words (only if checkwords is enabled)
+        words = []
+        if parsed.checkwords:
+            silence_json = env.directory / "silence.json"
             
-            if reuse:
-                try:
-                    with open(silence_json, 'r') as f:
-                        words = json.load(f)
-                    print(f"✅ post -tighten: loaded {len(words)} words from '{silence_json.name}'.")
-                except (json.JSONDecodeError, IOError) as e:
-                    print(f"⚠️  post -tighten: failed to load '{silence_json.name}': {e}")
-                    print(f"⏳ post -tighten: running fresh transcription...")
-                    words = None
+            if silence_json.exists():
+                if env.auto_confirm:
+                    reuse = True
+                else:
+                    response = input(f"♻️  Found existing transcription. Reuse it? [Y/n]: ").strip().lower()
+                    reuse = response not in ("n", "no")
+                
+                if reuse:
+                    try:
+                        with open(silence_json, 'r') as f:
+                            words = json.load(f)
+                    except (json.JSONDecodeError, IOError):
+                        words = None
+            
+            # Run stable-ts if we don't have cached words
+            if not words:
+                words = _run_stable_whisper(
+                    rough_video, env, model_name=parsed.whisper_model
+                )
+            
+            # Print transcript
+            _print_transcript(words)
         
-        # Run stable-ts if we don't have cached words
-        if words is None:
-            words = _run_stable_whisper(
-                rough_video, env, model_name=parsed.whisper_model
-            )
-        
-        # Print transcript
-        _print_transcript(words)
-        
-        # Extract initial speech segments from Whisper word grouping
-        initial_segments = _extract_speech_segments_from_words(
-            words, duration, leading_padding, trailing_padding, merge_tolerance=parsed.merge_tolerance
-        )
-        
-        print(f"🎤 post -tighten: detected {len(words)} word(s) from Whisper transcription.")
-        print(f"🔗 post -tighten: merging words within {parsed.merge_tolerance:.2f}s to prevent mid-sentence cuts.")
-        print(f"📊 post -tighten: initial segments from Whisper: {len(initial_segments)}")
-        
-        # Run silence detection to find actual quiet points in the waveform
-        # Use a sensitive threshold to catch all quiet moments
-        silence_threshold_db = -40.0  # More sensitive than full silence detection
-        min_silence_duration = 0.1  # Catch even brief pauses
-        
-        print(f"\n🔍 post -tighten: analyzing waveform for silence points (threshold={silence_threshold_db:.1f} dB)...")
-        silences = _detect_silences(rough_video, env, silence_threshold_db, min_silence_duration)
-        print(f"✅ post -tighten: found {len(silences)} silence window(s) in waveform.")
-        
-        # Validate and adjust segments to cut at actual silence points
-        keep_segments = _validate_segments_with_silence(
-            initial_segments,
-            words,
-            silences,
+        # Step 3: Build segments from silences, optionally checking for words
+        keep_segments = _build_segments_from_silences(
             duration,
-            boundary_padding=parsed.boundary_padding,
+            silences,
+            words,
+            boundary_padding=boundary_padding,
+            leading_padding=leading_padding,
             trailing_padding=trailing_padding,
-            search_tolerance=0.5,
+            path=rough_video,
+            env=env,
+            detect_spikes=parsed.detect_spikes,
+            check_words=parsed.checkwords,
         )
 
     # Common output for both modes
-    formatted_segments = (
-        ", ".join(
-            f"[{start:.2f}s → {end:.2f}s | {(end-start):.2f}s]" for start, end in keep_segments
-        )
-        if keep_segments
-        else "none"
-    )
-    print(f"🎬 post -tighten: segments to keep: {formatted_segments}.")
-    
-    print(
-        f"✂️  post -tighten: keeping {len(keep_segments)} segment(s) totalling {_segments_total(keep_segments):.1f}s out of {duration:.1f}s."
-    )
 
     _encode_tightened(rough_video, tightened_video, keep_segments, env)
 
