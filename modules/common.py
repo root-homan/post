@@ -139,7 +139,8 @@ def find_original_rough_video(env: StageEnvironment) -> Path:
 
 def find_preferred_rough_video(env: StageEnvironment) -> Path:
     """
-    Prefer an intra-frame rough cut when available, otherwise fall back to the original.
+    Prefer the LONGEST filename ending with '-rough.mp4' to handle multiple rough cuts.
+    Prefers intra-frame versions when available.
     """
     candidates = _list_rough_videos(env.directory)
 
@@ -148,24 +149,25 @@ def find_preferred_rough_video(env: StageEnvironment) -> Path:
             f"Expected rough cut video matching '*-rough.mp4' in '{env.directory}', but nothing was found."
         )
 
+    # Prefer intra-frame versions
     intra_versions = [path for path in candidates if "-intra-" in path.stem]
-    if len(intra_versions) == 1:
-        return intra_versions[0]
-    if len(intra_versions) > 1:
-        names = ", ".join(path.name for path in intra_versions)
-        env.abort(
-            f"Found multiple intra-frame rough cuts: {names}. "
-            "Keep only one '-intra-rough.mp4' file in the directory."
-        )
+    if intra_versions:
+        # Return the longest intra-frame filename
+        longest = max(intra_versions, key=lambda p: len(p.name))
+        if len(intra_versions) > 1:
+            print(f"ℹ️  Found {len(intra_versions)} intra-frame rough cuts. Using longest: '{longest.name}'")
+        return longest
 
+    # Fall back to originals and return the longest
     originals = [path for path in candidates if "-intra-" not in path.stem]
-    if len(originals) == 1:
-        return originals[0]
+    if originals:
+        longest = max(originals, key=lambda p: len(p.name))
+        if len(originals) > 1:
+            print(f"ℹ️  Found {len(originals)} rough cuts. Using longest: '{longest.name}'")
+        return longest
 
-    names = ", ".join(path.name for path in originals)
     env.abort(
-        f"Found multiple rough cuts without '-intra-': {names}. "
-        "Disambiguate the files and rerun the command."
+        f"No suitable rough cut found in '{env.directory}'."
     )
     raise AssertionError("unreachable")
 

@@ -3,8 +3,6 @@ import re
 import sys
 import shutil
 import subprocess
-import json
-import torch
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, List, Sequence, Tuple, Optional
@@ -41,22 +39,18 @@ except ImportError:
 
 # dB floor below which audio counts as silence; tune to your mic noise.
 # HIGHER absolute value, the LESS aggressively it cuts.
-# SILENCE_THRESHOLD_DB = -32.0
-SILENCE_THRESHOLD_DB = -22.0 # (for the wireless go 3 mic).
+SILENCE_THRESHOLD_DB = -22.0
+# SILENCE_THRESHOLD_DB = -22.0 # (for the wireless go 3 mic).
 
 # Minimum silence length (seconds) before we consider trimming it out.
 MIN_SILENCE_DURATION_SECONDS = 0.5
 # Extra audio to keep around each internal silence boundary (negative tightens).
-BOUNDARY_PADDING_SECONDS = 0.0
+BOUNDARY_PADDING_SECONDS = 0.1
 
 # Buffer before the first segment so the intro breathes a bit.
 LEADING_EDGE_PADDING_SECONDS = 0.2
 # Buffer after the last segment so the outro isn't abruptly chopped.
 TRAILING_EDGE_PADDING_SECONDS = 3
-# Maximum gap between words to keep them in the same segment (prevents mid-sentence cuts).
-WORD_MERGE_TOLERANCE_SECONDS = 0.7
-# Audio further than this distance from any word will be cut (seconds).
-WORD_PROXIMITY_THRESHOLD_SECONDS = 1
 
 # Encoding configuration tuned for Apple Silicon hardware acceleration.
 AUDIO_BITRATE = "192k"
@@ -268,356 +262,25 @@ def _clamp(value: float, lower: float, upper: float) -> float:
     return max(lower, min(upper, value))
 
 
-def _run_stable_whisper(
-    path: Path,
-    env: StageEnvironment,
-    model_name: str = "large-v2",
-) -> List[dict]:
-    """
-    Run stable-ts on the video file and return word-level timestamps.
-    Returns the words list.
-    """
-    try:
-        import stable_whisper
-    except ImportError:
-        env.abort(
-            "stable-ts is not installed. Install it with: pip3 install --break-system-packages stable-ts"
-        )
-
-    # Detect device
-    # Note: MPS has numerical stability issues with Whisper, so we use CPU on macOS
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    
-    print(f"⏳ Running Whisper transcription (model: {model_name}, device: {device})...", flush=True)
-    
-    # Load model and transcribe
-    model = stable_whisper.load_model(model_name, device=device)
-    result = model.transcribe(str(path), word_timestamps=True)
-    
-    # Extract words with timestamps
-    words = []
-    for segment in result.segments:
-        for word in segment.words:
-            words.append({
-                'word': word.word.strip(),
-                'start': word.start,
-                'end': word.end
-            })
-    
-    # Save to persistent file in the working directory
-    output_path = env.directory / "silence.json"
-    with open(output_path, 'w') as f:
-        json.dump(words, f, indent=2)
-    
-    print(f"✅ Transcribed {len(words)} words\n")
-    
-    return words
-
-
-def _extract_speech_segments_from_words(
-    words: List[dict],
-    duration: float,
-    leading_padding: float,
-    trailing_padding: float,
-    merge_tolerance: float = WORD_MERGE_TOLERANCE_SECONDS,
-) -> List[Tuple[float, float]]:
-    """
-    Extract speech segments from word-level timestamps.
-    Returns list of (start, end) tuples representing where speech occurs.
-    
-    Args:
-        words: List of word dictionaries with 'start' and 'end' timestamps
-        duration: Total duration of the video
-        leading_padding: Padding before the first segment
-        trailing_padding: Padding after the last segment
-        merge_tolerance: Maximum gap between words to keep in same segment (prevents mid-sentence cuts)
-    """
-    if not words:
-        return [(0.0, duration)]
-    
-    # Extract all word boundaries
-    speech_ranges: List[Tuple[float, float]] = []
-    
-    for word in words:
-        start = word.get("start")
-        end = word.get("end")
-        if start is not None and end is not None:
-            speech_ranges.append((start, end))
-    
-    if not speech_ranges:
-        return [(0.0, duration)]
-    
-    # Merge overlapping or nearby ranges (within merge_tolerance)
-    speech_ranges.sort(key=lambda x: x[0])
-    merged: List[Tuple[float, float]] = [speech_ranges[0]]
-    
-    for start, end in speech_ranges[1:]:
-        last_start, last_end = merged[-1]
-        gap = start - last_end
-        
-        # Merge if overlapping or gap is within tolerance
-        if gap <= merge_tolerance:
-            # Keep the same start, extend to the new end
-            merged[-1] = (last_start, max(last_end, end))
-        else:
-            # Gap is too large, create a new segment (this is where we'll cut)
-            merged.append((start, end))
-    
-    # Apply padding to first and last segments
-    if merged:
-        first_start, first_end = merged[0]
-        adjusted_first_start = _clamp(first_start - leading_padding, 0.0, first_end)
-        merged[0] = (adjusted_first_start, first_end)
-        
-        last_start, last_end = merged[-1]
-        adjusted_last_end = _clamp(last_end + trailing_padding, last_start, duration)
-        merged[-1] = (last_start, adjusted_last_end)
-    
-    return merged
-
-
-def _find_nearest_silence_edge(
-    target_time: float,
-    silences: Sequence[SilenceWindow],
-    direction: str = "after",
-    max_search: float = 0.5,
-) -> Optional[float]:
-    """
-    Find the nearest silence edge to a target time.
-    
-    Args:
-        target_time: The time we want to find silence near
-        silences: List of silence windows
-        direction: "before" or "after" - which direction to search
-        max_search: Maximum distance to search for silence (seconds)
-    
-    Returns:
-        Time of nearest silence edge, or None if no silence found within max_search
-    """
-    if direction == "before":
-        # Look for silence end (where speech starts) before target_time
-        candidates = [
-            s.end for s in silences 
-            if s.end <= target_time and (target_time - s.end) <= max_search
-        ]
-        return max(candidates) if candidates else None
-    else:  # "after"
-        # Look for silence start (where speech ends) after target_time
-        candidates = [
-            s.start for s in silences 
-            if s.start >= target_time and (s.start - target_time) <= max_search
-        ]
-        return min(candidates) if candidates else None
-
-
-def _get_words_in_segment(
-    words: List[dict],
-    seg_start: float,
-    seg_end: float,
-) -> str:
-    """Extract and format the words that fall within a time segment."""
-    words_in_segment = []
-    for word in words:
-        word_start = word.get("start", 0)
-        word_end = word.get("end", 0)
-        # Include word if it overlaps with the segment
-        if word_end > seg_start and word_start < seg_end:
-            words_in_segment.append(word.get("word", "").strip())
-    
-    if not words_in_segment:
-        return "(no words detected)"
-    
-    # Join words and limit length for readability
-    phrase = " ".join(words_in_segment)
-    if len(phrase) > 80:
-        phrase = phrase[:77] + "..."
-    return f'"{phrase}"'
-
-
-def _has_word_in_range(
-    words: List[dict],
-    start: float,
-    end: float,
-    tolerance: float = 0.05,
-) -> Tuple[bool, List[dict]]:
-    """
-    Check if any words fall within a time range (with tolerance).
-    
-    Returns:
-        (has_word, words_in_range)
-    """
-    words_in_range = []
-    for word in words:
-        word_start = word.get("start", 0)
-        word_end = word.get("end", 0)
-        # Check if word overlaps with the range (with tolerance)
-        if word_end + tolerance > start and word_start - tolerance < end:
-            words_in_range.append(word)
-    
-    return len(words_in_range) > 0, words_in_range
-
-
-def _detect_loud_regions(
-    path: Path,
-    env: StageEnvironment,
-    loud_threshold_db: float = -15.0,
-    min_duration: float = 0.05,
-) -> List[Tuple[float, float]]:
-    """
-    Detect loud regions (spikes) in the audio that are above a threshold.
-    
-    These might be words, or they might be non-word noises (pencil hits, etc).
-    
-    Args:
-        path: Path to video file
-        env: Stage environment
-        loud_threshold_db: Threshold above which audio is considered "loud"
-        min_duration: Minimum duration of a loud region
-    
-    Returns:
-        List of (start, end) tuples for loud regions
-    """
-    # Use silencedetect in reverse - detect "loud" regions by using a higher threshold
-    # and then inverting the result
-    
-    # We'll use silencedetect to find everything BELOW the loud threshold,
-    # then invert to find everything ABOVE it
-    detect_filter = f"silencedetect=noise={loud_threshold_db}dB:d={min_duration}"
-    
-    process = subprocess.Popen(
-        [
-            "ffmpeg",
-            "-hide_banner",
-            "-nostdin",
-            "-threads", "0",
-            "-i",
-            str(path),
-            "-vn",
-            "-af",
-            detect_filter,
-            "-f",
-            "null",
-            "-",
-        ],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-    )
-    
-    try:
-        stdout, stderr = process.communicate()
-        return_code = process.returncode
-    except KeyboardInterrupt:
-        _terminate_process(process)
-        raise
-    
-    if return_code != 0:
-        # Silently fail if this doesn't work
-        return []
-    
-    duration = _probe_duration(path, env)
-    quiet_regions = _parse_silences(stderr, env, duration)
-    
-    # Invert: find loud regions (everything NOT in quiet regions)
-    loud_regions: List[Tuple[float, float]] = []
-    cursor = 0.0
-    
-    for quiet in quiet_regions:
-        if quiet.start > cursor:
-            loud_regions.append((cursor, quiet.start))
-        cursor = quiet.end
-    
-    if cursor < duration:
-        loud_regions.append((cursor, duration))
-    
-    return loud_regions
-
-
-def _find_non_word_spikes(
-    loud_regions: List[Tuple[float, float]],
-    words: List[dict],
-    segments: List[Tuple[float, float]],
-    proximity_threshold: float = WORD_PROXIMITY_THRESHOLD_SECONDS,
-) -> List[Tuple[float, float, str]]:
-    """
-    Find loud regions that are NOT near any words (potential noise spikes).
-    
-    Args:
-        loud_regions: List of loud audio regions
-        words: Word list from Whisper
-        segments: Segments we're keeping
-        proximity_threshold: How close a loud region must be to a word to be considered speech
-    
-    Returns:
-        List of (start, end, reason) tuples for non-word spikes to remove
-    """
-    non_word_spikes = []
-    
-    for loud_start, loud_end in loud_regions:
-        loud_duration = loud_end - loud_start
-        
-        # Skip very long loud regions (these are likely speech)
-        if loud_duration > 2.0:
-            continue
-        
-        # Check if this loud region is within any of our kept segments
-        in_segment = False
-        for seg_start, seg_end in segments:
-            if loud_end > seg_start and loud_start < seg_end:
-                in_segment = True
-                break
-        
-        if not in_segment:
-            continue
-        
-        # Check if any words are near this loud region
-        has_nearby_word = False
-        for word in words:
-            word_start = word.get("start", 0)
-            word_end = word.get("end", 0)
-            
-            # Check if word is within proximity threshold
-            distance = max(0, max(loud_start - word_end, word_start - loud_end))
-            if distance <= proximity_threshold:
-                has_nearby_word = True
-                break
-        
-        if not has_nearby_word:
-            # This is a spike with no nearby words - probably noise
-            reason = f"isolated {loud_duration:.2f}s spike"
-            non_word_spikes.append((loud_start, loud_end, reason))
-    
-    return non_word_spikes
-
-
 def _build_segments_from_silences(
     duration: float,
     silences: Sequence[SilenceWindow],
-    words: List[dict],
     boundary_padding: float,
     leading_padding: float,
     trailing_padding: float,
-    path: Optional[Path] = None,
-    env: Optional[StageEnvironment] = None,
-    detect_spikes: bool = False,
-    check_words: bool = False,
 ) -> List[Tuple[float, float]]:
     """
-    Build segments by cutting at silences, then validate against words.
-    
-    This is the PRIMARY approach: cut at silences, then check if we're losing words.
-    If we are, adjust to preserve them.
+    Build segments by cutting at silences.
     
     Args:
         duration: Total video duration
         silences: Detected silence windows from waveform
-        words: Word list from Whisper transcription
         boundary_padding: Padding at cut points (negative = tighter)
         leading_padding: Padding before first segment
         trailing_padding: Padding after last segment
     
     Returns:
-        Final segments that preserve all words and cut at silences
+        Final segments based purely on silence detection
     """
     
     # Step 1: Build list of what we're CUTTING (the silence regions with boundary padding)
@@ -638,7 +301,7 @@ def _build_segments_from_silences(
             cut_regions.append((cut_start, cut_end))
     
     
-    # Step 2: Build initial segments by inverting the cut regions
+    # Step 2: Build segments by inverting the cut regions
     segments: List[Tuple[float, float]] = []
     cursor = 0.0
     
@@ -661,9 +324,7 @@ def _build_segments_from_silences(
         segments = [(0.0, duration)]
     
     # Step 3: Apply leading/trailing padding
-    validated_segments = []
-    words_saved_count = 0
-    spikes_removed_count = 0
+    final_segments = []
     
     for i, (seg_start, seg_end) in enumerate(segments):
         is_first = (i == 0)
@@ -675,137 +336,7 @@ def _build_segments_from_silences(
         if is_last:
             seg_end = min(duration, seg_end + trailing_padding)
         
-        validated_segments.append((seg_start, seg_end))
-    
-    # Step 4: Find additional regions to cut within kept segments (optional)
-    if check_words:
-        # Build "word zones" - regions within proximity_threshold of any word
-        word_proximity_threshold = WORD_PROXIMITY_THRESHOLD_SECONDS
-        word_zones: List[Tuple[float, float]] = []
-        
-        for word in words:
-            word_start = word.get("start", 0)
-            word_end = word.get("end", 0)
-            # Create a zone around each word
-            zone_start = max(0.0, word_start - word_proximity_threshold)
-            zone_end = min(duration, word_end + word_proximity_threshold)
-            word_zones.append((zone_start, zone_end))
-        
-        # Merge overlapping word zones
-        word_zones.sort(key=lambda x: x[0])
-        merged_zones: List[Tuple[float, float]] = []
-        for zone_start, zone_end in word_zones:
-            if merged_zones and zone_start <= merged_zones[-1][1]:
-                prev_start, prev_end = merged_zones[-1]
-                merged_zones[-1] = (prev_start, max(prev_end, zone_end))
-            else:
-                merged_zones.append((zone_start, zone_end))
-        
-        # Step 5: For each kept segment, only keep the parts that overlap with word zones
-        final_segments: List[Tuple[float, float]] = []
-        total_additional_cut = 0.0
-        
-        for seg_start, seg_end in validated_segments:
-            # Find which parts of this segment overlap with word zones
-            for zone_start, zone_end in merged_zones:
-                # Calculate overlap
-                overlap_start = max(seg_start, zone_start)
-                overlap_end = min(seg_end, zone_end)
-                
-                if overlap_end > overlap_start:
-                    final_segments.append((overlap_start, overlap_end))
-            
-            # Calculate how much we're cutting from this segment
-            segment_duration = seg_end - seg_start
-            kept_duration = sum(min(e, seg_end) - max(s, seg_start) 
-                               for s, e in final_segments 
-                               if e > seg_start and s < seg_end)
-            total_additional_cut += segment_duration - kept_duration
-        
-        if total_additional_cut > 0.1:
-            print(f"✅ Additional cuts: {total_additional_cut:.2f}s removed (regions >{word_proximity_threshold:.1f}s from any word)")
-        
-        # Merge any overlapping segments
-        final_segments.sort(key=lambda x: x[0])
-        merged_segments: List[Tuple[float, float]] = []
-        for seg_start, seg_end in final_segments:
-            if merged_segments and seg_start <= merged_segments[-1][1]:
-                prev_start, prev_end = merged_segments[-1]
-                merged_segments[-1] = (prev_start, max(prev_end, seg_end))
-            else:
-                merged_segments.append((seg_start, seg_end))
-        
-        final_segments = merged_segments
-    else:
-        # No word checking - just use validated segments as-is
-        final_segments = validated_segments
-    
-    # Step 4: Look for spikes that aren't words (optional)
-    if detect_spikes and path is not None and env is not None:
-        print(f"\n{'='*88}")
-        print(f"🔊 DETECTING NON-WORD SPIKES")
-        print(f"{'='*88}\n")
-        print(f"Analyzing audio for loud spikes that aren't near words...\n")
-        
-        # Detect loud regions in the audio
-        loud_regions = _detect_loud_regions(path, env, loud_threshold_db=-15.0, min_duration=0.05)
-        
-        if loud_regions:
-            print(f"Found {len(loud_regions)} loud region(s) in audio.")
-            
-            # Find which loud regions are NOT near any words
-            non_word_spikes = _find_non_word_spikes(
-                loud_regions, words, final_segments, proximity_threshold=WORD_PROXIMITY_THRESHOLD_SECONDS
-            )
-            
-            if non_word_spikes:
-                print(f"\n⚠️  NON-WORD SPIKES DETECTED (WILL BE REMOVED):")
-                for i, (spike_start, spike_end, reason) in enumerate(non_word_spikes, 1):
-                    spike_duration = spike_end - spike_start
-                    print(f"  Spike #{i}:")
-                    print(f"    Rough video timestamp: [{spike_start:.2f}s → {spike_end:.2f}s]")
-                    print(f"    ⚠️  CHECK THIS RANGE IN YOUR ROUGH VIDEO TO VERIFY")
-                    print(f"    Duration: {spike_duration:.2f}s")
-                    print(f"    Reason: {reason} with no nearby words")
-                    print(f"    Action: This will be CUT from the final video")
-                    print(f"    Verification: Should be a noise (bump, pencil hit, etc), NOT speech\n")
-                
-                # Remove these spikes from our segments
-                # This requires splitting segments that contain spikes
-                segments_after_spike_removal = []
-                for seg_start, seg_end in final_segments:
-                    current_segments = [(seg_start, seg_end)]
-                    
-                    # For each spike, split the segment if it contains the spike
-                    for spike_start, spike_end, _ in non_word_spikes:
-                        new_segments = []
-                        for cur_start, cur_end in current_segments:
-                            if spike_end <= cur_start or spike_start >= cur_end:
-                                # Spike doesn't overlap this segment
-                                new_segments.append((cur_start, cur_end))
-                            elif spike_start <= cur_start and spike_end >= cur_end:
-                                # Spike completely covers this segment - remove it
-                                continue
-                            elif spike_start > cur_start and spike_end < cur_end:
-                                # Spike is in the middle - split into two segments
-                                new_segments.append((cur_start, spike_start))
-                                new_segments.append((spike_end, cur_end))
-                            elif spike_start <= cur_start:
-                                # Spike overlaps start
-                                new_segments.append((spike_end, cur_end))
-                            else:
-                                # Spike overlaps end
-                                new_segments.append((cur_start, spike_start))
-                        current_segments = new_segments
-                    
-                    segments_after_spike_removal.extend(current_segments)
-                
-                final_segments = segments_after_spike_removal
-                spikes_removed_count = len(non_word_spikes)
-            else:
-                print(f"✅ All loud regions are near words - no non-word spikes to remove\n")
-        else:
-            print(f"No loud regions detected.\n")
+        final_segments.append((seg_start, seg_end))
     
     # Clean up segments
     final_segments = [(max(0.0, s), min(duration, e)) for s, e in final_segments]
@@ -824,15 +355,6 @@ def _build_segments_from_silences(
     print(f"    Remaining: {final_duration:.2f}s\n")
     
     return final_segments
-
-
-def _print_transcript(words: List[dict]) -> None:
-    """Print the full transcript from word list in a readable format."""
-    if not words:
-        print("📄 No transcript detected.")
-        return
-    
-    print(f"📄 Words detected: {len(words)} words\n")
 
 
 def _build_keep_segments(
@@ -985,24 +507,16 @@ def run(args):
     """
     Remove silences from video using silence threshold detection.
     
-    Algorithm (default):
+    Algorithm:
         1. Detect silences in the audio waveform using threshold
         2. Cut at silence boundaries with boundary padding
     
-    With --checkwords flag:
-        1. Detect silences in the audio waveform using threshold
-        2. Use Whisper transcription to identify all words
-        3. Cut additional regions that are far from any words (>1s away)
-    
-    This ensures:
-        - Cuts are made at actual silence points in the waveform
-        - With --checkwords: additional cutting of non-speech audio
-    
     Dependencies:
-        - Requires a single rough cut named `<title>-<take_id>-rough.mp4` in the working directory.
+        - By default, operates on the LONGEST filename ending with `-rough.mp4` in the working directory.
+        - Alternatively, accepts an optional filepath argument to specify which video to process.
     
     Failure behaviour:
-        - Exits without modifying files when the rough cut is absent or when more than one candidate rough cut exists.
+        - Exits without modifying files when no rough cut is found or when the specified file doesn't exist.
         - Prompts before overwriting `<title>-<take_id>-rough-tight.mp4` unless `--yes` is specified.
     
     Output:
@@ -1010,31 +524,25 @@ def run(args):
     """
     parser = build_cli_parser(
         stage="tighten",
-        summary="Remove silences from rough cut by detecting silence thresholds and preserving all words identified by Whisper.",
-    )
-    parser.add_argument(
-        "--silence-threshold",
-        type=float,
-        default=None,
-        help=f"Use silence detection instead of Whisper. Silence threshold in dB (e.g., {SILENCE_THRESHOLD_DB})",
+        summary="Remove silences from rough cut by detecting silence thresholds.",
     )
     parser.add_argument(
         "--threshold",
         type=float,
         default=SILENCE_THRESHOLD_DB,
-        help=f"(Deprecated: use --silence-threshold) Silence threshold in dB (default: {SILENCE_THRESHOLD_DB})",
+        help=f"Silence threshold in dB (default: {SILENCE_THRESHOLD_DB})",
     )
     parser.add_argument(
         "--min-silence",
         type=float,
         default=MIN_SILENCE_DURATION_SECONDS,
-        help=f"Minimum silence duration in seconds to remove (only for silence detection mode, default: {MIN_SILENCE_DURATION_SECONDS})",
+        help=f"Minimum silence duration in seconds to remove (default: {MIN_SILENCE_DURATION_SECONDS})",
     )
     parser.add_argument(
         "--boundary-padding",
         type=float,
         default=BOUNDARY_PADDING_SECONDS,
-        help=f"Padding around silence boundaries in seconds, negative values tighten more (only for silence detection mode, default: {BOUNDARY_PADDING_SECONDS})",
+        help=f"Padding around silence boundaries in seconds, negative values tighten more (default: {BOUNDARY_PADDING_SECONDS})",
     )
     parser.add_argument(
         "--leading-padding",
@@ -1049,28 +557,10 @@ def run(args):
         help=f"Padding after the last segment in seconds (default: {TRAILING_EDGE_PADDING_SECONDS})",
     )
     parser.add_argument(
-        "--merge-tolerance",
-        type=float,
-        default=WORD_MERGE_TOLERANCE_SECONDS,
-        help=f"Maximum gap between words to keep in same segment, prevents mid-sentence cuts (only for Whisper mode, default: {WORD_MERGE_TOLERANCE_SECONDS}s)",
-    )
-    parser.add_argument(
-        "--whisper-model",
-        type=str,
-        default="large-v2",
-        help="Whisper model to use for transcription (default: large-v2)",
-    )
-    parser.add_argument(
-        "--detect-spikes",
-        action="store_true",
-        default=False,
-        help="Enable detection and removal of non-word audio spikes (e.g., pencil hits, bumps)",
-    )
-    parser.add_argument(
-        "--checkwords",
-        action="store_true",
-        default=False,
-        help="Enable additional cutting of audio regions far from words (uses Whisper transcription)",
+        "filepath",
+        nargs="?",
+        default=None,
+        help="Optional path to the video file to tighten (defaults to longest '*-rough.mp4' file)",
     )
     parsed = parser.parse_args(args)
 
@@ -1080,7 +570,18 @@ def run(args):
         auto_confirm=parsed.yes,
     )
 
-    rough_video = find_preferred_rough_video(env)
+    # Use provided filepath or find the longest rough video
+    if parsed.filepath:
+        rough_video = Path(parsed.filepath).expanduser().resolve()
+        if not rough_video.exists():
+            env.abort(f"Specified video file '{parsed.filepath}' does not exist.")
+        if not rough_video.is_file():
+            env.abort(f"Specified path '{parsed.filepath}' is not a file.")
+        if not rough_video.name.endswith("-rough.mp4"):
+            print(f"⚠️  Warning: File '{rough_video.name}' does not follow the '*-rough.mp4' naming convention.")
+    else:
+        rough_video = find_preferred_rough_video(env)
+    
     if "-intra-" not in rough_video.stem:
         env.abort(
             "Tighten now expects an all-intra rough cut. "
@@ -1098,109 +599,37 @@ def run(args):
     _ensure_tool("ffprobe", env)
 
     # Extract parameters from parsed args
+    threshold_db = parsed.threshold
+    min_silence = parsed.min_silence
+    boundary_padding = parsed.boundary_padding
     leading_padding = parsed.leading_padding
     trailing_padding = parsed.trailing_padding
     duration = _probe_duration(rough_video, env)
     
-    # Determine which mode to use
-    use_silence_detection = parsed.silence_threshold is not None
+    # Detect silences
+    print(f"🔊 Detecting silences...")
+    print(f"    Threshold: {threshold_db:.1f} dB, Min duration: {min_silence:.2f}s\n")
     
-    if use_silence_detection:
-        # SILENCE DETECTION MODE (legacy path)
-        print("🔊 post -tighten: using silence detection mode")
-        
-        threshold_db = parsed.silence_threshold
-        min_silence = parsed.min_silence
-        boundary_padding = parsed.boundary_padding
-        
-        print(
-            f"🎧 post -tighten: detecting silences (threshold={threshold_db:.1f} dB, "
-            f"min_duration={min_silence:.1f}s, padding={boundary_padding:.2f}s, "
-            f"start_edge={leading_padding:.2f}s, end_edge={trailing_padding:.2f}s)."
-        )
-        silences = _detect_silences(rough_video, env, threshold_db, min_silence)
-        print(f"🔍 post -tighten: raw silences detected: {_format_windows(silences)}.")
+    silences = _detect_silences(rough_video, env, threshold_db, min_silence)
+    
+    # Calculate silence statistics
+    total_silence_duration = sum(s.duration for s in silences)
+    remaining_duration = duration - total_silence_duration
+    
+    print(f"✅ Silences detected: {len(silences)} region(s)")
+    print(f"    Cutting: {total_silence_duration:.2f}s")
+    print(f"    Remaining: {remaining_duration:.2f}s\n")
+    
+    # Build segments from silences
+    keep_segments = _build_segments_from_silences(
+        duration,
+        silences,
+        boundary_padding=boundary_padding,
+        leading_padding=leading_padding,
+        trailing_padding=trailing_padding,
+    )
 
-        long_silences = [
-            window
-            for window in silences
-            if window.duration >= min_silence
-        ]
-        print(f"🪵 post -tighten: silences ≥ {min_silence:.1f}s: {_format_windows(long_silences)}.")
-
-        keep_segments = _build_keep_segments(
-            duration, long_silences, boundary_padding, leading_padding, trailing_padding
-        )
-        
-        print(
-            f"🔊 post -tighten: detected {len(long_silences)} silence window(s) ≥ {min_silence:.1f}s with threshold {threshold_db:.1f} dB."
-        )
-    else:
-        # WHISPER MODE (default path using stable-ts)
-        # Step 1: Run silence detection FIRST (this is the primary cutting method)
-        # Use the MIN_SILENCE_DURATION_SECONDS constant from the top of the file
-        # This should be aggressive since Whisper will protect any words found in cut regions
-        min_silence_duration = MIN_SILENCE_DURATION_SECONDS
-        threshold_db = SILENCE_THRESHOLD_DB
-        boundary_padding = parsed.boundary_padding
-        
-        print(f"🔊 Detecting silences...")
-        print(f"    Threshold: {threshold_db:.1f} dB, Min duration: {min_silence_duration:.2f}s\n")
-        
-        silences = _detect_silences(rough_video, env, threshold_db, min_silence_duration)
-        
-        # Calculate silence statistics
-        total_silence_duration = sum(s.duration for s in silences)
-        remaining_duration = duration - total_silence_duration
-        
-        print(f"✅ Silences detected: {len(silences)} region(s)")
-        print(f"    Cutting: {total_silence_duration:.2f}s")
-        print(f"    Remaining: {remaining_duration:.2f}s\n")
-        
-        # Step 2: Get Whisper transcription to identify words (only if checkwords is enabled)
-        words = []
-        if parsed.checkwords:
-            silence_json = env.directory / "silence.json"
-            
-            if silence_json.exists():
-                if env.auto_confirm:
-                    reuse = True
-                else:
-                    response = input(f"♻️  Found existing transcription. Reuse it? [Y/n]: ").strip().lower()
-                    reuse = response not in ("n", "no")
-                
-                if reuse:
-                    try:
-                        with open(silence_json, 'r') as f:
-                            words = json.load(f)
-                    except (json.JSONDecodeError, IOError):
-                        words = None
-            
-            # Run stable-ts if we don't have cached words
-            if not words:
-                words = _run_stable_whisper(
-                    rough_video, env, model_name=parsed.whisper_model
-                )
-            
-            # Print transcript
-            _print_transcript(words)
-        
-        # Step 3: Build segments from silences, optionally checking for words
-        keep_segments = _build_segments_from_silences(
-            duration,
-            silences,
-            words,
-            boundary_padding=boundary_padding,
-            leading_padding=leading_padding,
-            trailing_padding=trailing_padding,
-            path=rough_video,
-            env=env,
-            detect_spikes=parsed.detect_spikes,
-            check_words=parsed.checkwords,
-        )
-
-    # Common output for both modes
-
+    # Encode the tightened video
     _encode_tightened(rough_video, tightened_video, keep_segments, env)
 
     print(
