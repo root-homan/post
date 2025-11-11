@@ -1,12 +1,55 @@
 #!/usr/bin/env python3
+"""
+Post-production video processing tool.
+
+This script automatically activates its own virtual environment before running,
+ensuring all dependencies are isolated and available.
+"""
+import os
 import sys
-import importlib.util
 from pathlib import Path
 
+# Get the directory where this script lives (resolve symlinks)
+script_path = Path(__file__).resolve()
+script_dir = script_path.parent
+venv_dir = script_dir / "post-venv"
+
+# Re-exec with the virtualenv's Python interpreter when available
+if venv_dir.exists():
+    if sys.platform == "win32":
+        venv_python = venv_dir / "Scripts" / "python.exe"
+    else:
+        venv_python = venv_dir / "bin" / "python"
+
+    try:
+        current_python = Path(sys.executable).resolve()
+    except FileNotFoundError:
+        current_python = Path(sys.executable)
+
+    if venv_python.exists() and current_python != venv_python.resolve():
+        os.execv(str(venv_python), [str(venv_python), str(script_path), *sys.argv[1:]])
+
+# At this point we're running inside the virtualenv interpreter (or it was missing).
+# Ensure the virtualenv site-packages is on sys.path when present.
+if venv_dir.exists() and not hasattr(sys, "real_prefix") and not (
+    hasattr(sys, "base_prefix") and sys.base_prefix != sys.prefix
+):
+    if sys.platform == "win32":
+        site_packages = venv_dir / "Lib" / "site-packages"
+    else:
+        python_version = f"python{sys.version_info.major}.{sys.version_info.minor}"
+        site_packages = venv_dir / "lib" / python_version / "site-packages"
+
+    if site_packages.exists():
+        sys.path.insert(0, str(site_packages))
+        os.environ["VIRTUAL_ENV"] = str(venv_dir)
+        if "PYTHONHOME" in os.environ:
+            del os.environ["PYTHONHOME"]
+
+import importlib.util
+
 def main():
-    # Get the directory where this script lives (resolve symlinks)
-    script_path = Path(__file__).resolve()
-    script_dir = script_path.parent
+    # Get module directory
     modules_dir = script_dir / "modules"
     
     # Parse command line arguments
@@ -18,7 +61,7 @@ def main():
         print("  -tighten     Remove silence from video")
         print("  -convert     Convert rough cut to all-intra H.264 for fast tightening")
         print("  -compress    Compress video with VideoToolbox and crop to 4:3")
-        print("  -denoise     Remove background noise from audio using Facebook's denoiser")
+        print("  -denoise     Remove background noise from audio using AI models (DeepFilterNet/Facebook)")
         print("  -transcribe  Generate word-level timestamps")
         print("  -essay       Generate essay/transcript from timestamps")
         print("  -captions    Add captions to video")

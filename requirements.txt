@@ -1,0 +1,11 @@
+# Runtime dependencies pinned for DeepFilterNet compatibility
+# DeepFilterNet 0.5.6 requires torch/torchaudio 2.2.x and numpy < 2.0
+torch==2.2.0
+torchaudio==2.2.0
+numpy==1.26.4
+openai==2.7.2
+soundfile==0.13.1
+stable-ts==2.19.1
+deepfilternet==0.5.6
+denoiser==0.1.5
+

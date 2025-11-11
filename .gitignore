@@ -1,0 +1,21 @@
+# Python bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+post-venv/
+venv/
+.env/
+
+# Build / cache artifacts
+*.log
+*.tmp
+*.bak
+
+# Remotion build artifacts
+remotion/node_modules/
+remotion/.cache/
+
+# macOS metadata
+.DS_Store
