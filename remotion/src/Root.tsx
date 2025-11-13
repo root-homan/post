@@ -1,8 +1,9 @@
 import { Composition } from "remotion";
 import { CaptionScene } from "./CaptionScene";
 import { CaptionScenePreview } from "./CaptionScenePreview";
-import { CaptionData } from "./types";
 import { PREVIEW_DATA } from "./PreviewData";
+import { TokenScene } from "./token/TokenScene";
+import { TOKEN_SCENE_PREVIEW_PROPS } from "./token/previewData";
 
 export const RemotionRoot: React.FC = () => {
   return (
@@ -40,6 +41,16 @@ export const RemotionRoot: React.FC = () => {
         defaultProps={{
           inputProps: PREVIEW_DATA,
         }}
+      />
+
+      <Composition
+        id="TokenScene"
+        component={TokenScene}
+        durationInFrames={180}
+        fps={30}
+        width={2880}
+        height={2160}
+        defaultProps={TOKEN_SCENE_PREVIEW_PROPS}
       />
     </>
   );

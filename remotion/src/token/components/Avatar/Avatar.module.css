@@ -1,0 +1,5 @@
+.root {
+  --avatar-background: linear-gradient(135deg, #f5f6f9 0%, #ebeef4 100%);
+  --avatar-shadow: 0 24px 68px rgba(18, 24, 36, 0.18);
+  --avatar-initial-color: #252a34;
+}

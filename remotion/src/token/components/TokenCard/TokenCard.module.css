@@ -1,0 +1,4 @@
+.root {
+  --token-card-background: #ffffff;
+  --token-card-shadow: 0 48px 120px rgba(18, 23, 32, 0.14);
+}
