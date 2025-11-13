@@ -11,9 +11,10 @@ def run(args):
     """
     Dependencies:
         - Needs a single word timestamps file named `<title>-<take_id>-rough-tight.json` in the target directory.
+        - Needs a matching subtitle file `<title>-<take_id>-rough-tight.srt` in the target directory.
         - Requires OPENAI_API_KEY environment variable to be set.
     Failure behaviour:
-        - Exits safely when the timestamps file is missing or when multiple candidates are detected.
+        - Exits safely when the timestamps or subtitle file is missing or when multiple candidates are detected.
         - Aborts if OPENAI_API_KEY is not set.
         - Prompts before overwriting `<title>-<take_id>-rough-tight-essay.txt` unless `--yes` is passed.
     Output:
@@ -32,26 +33,42 @@ def run(args):
         auto_confirm=parsed.yes,
     )
 
-    # Find the JSON file
+    # Find the JSON and SRT files
     json_file = env.expect_single_file("*-rough-tight.json", "word timestamps file")
+    srt_file = env.expect_single_file("*-rough-tight.srt", "subtitle SRT file")
+
+    if json_file.stem != srt_file.stem:
+        env.abort(
+            "Word timestamps file and subtitle file do not share the same basename. "
+            f"Expected '{json_file.stem}', found '{srt_file.stem}'."
+        )
+
     essay_file = json_file.with_name(f"{json_file.stem}-essay.txt")
 
     env.ensure_output_path(essay_file)
     env.announce_checks_passed(
-        f"All safety checks passed. Ready to write essay '{essay_file.name}' from '{json_file.name}'."
+        f"All safety checks passed. Ready to write essay '{essay_file.name}' from '{srt_file.name}'."
     )
 
-    # Read the JSON file and convert to transcript text
+    # Read the JSON file to sanity check availability of word timestamps
     print(f"📖 post -essay: reading word timestamps from '{json_file.name}'...")
     try:
         with open(json_file, 'r', encoding='utf-8') as f:
-            words = json.load(f)
-        
-        # Convert word list to a simple transcript text
-        transcript_text = ' '.join(word['word'] for word in words)
-        
+            word_data = json.load(f)
+        if not isinstance(word_data, list):
+            env.abort("Word timestamps JSON is not a list.")
+        print(f"📘 post -essay: verified word timestamps file contains {len(word_data)} entries.")
     except Exception as e:
         env.abort(f"Failed to read JSON file: {e}")
+
+    # Read the SRT file to feed into GPT
+    print(f"🎞️ post -essay: reading subtitles from '{srt_file.name}'...")
+    try:
+        srt_content = srt_file.read_text(encoding="utf-8")
+        if not srt_content.strip():
+            env.abort(f"Subtitle file '{srt_file.name}' is empty.")
+    except Exception as e:
+        env.abort(f"Failed to read SRT file: {e}")
 
     # Read the feedback guidelines
     guidelines_path = Path(__file__).parent / "feedback-guidelines.md"
@@ -69,7 +86,11 @@ def run(args):
     try:
         essay_content = call_gpt5(
             system_prompt=guidelines_content,
-            user_prompt=f"Please process this video transcript according to the format specified in your guidelines:\n\n{transcript_text}"
+            user_prompt=(
+                "Please process the following subtitle file (SRT format) according to the format "
+                "specified in your guidelines:\n\n"
+                f"{srt_content}"
+            )
         )
     except SystemExit:
         env.abort("GPT-5 API call failed")

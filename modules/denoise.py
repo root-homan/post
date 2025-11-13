@@ -315,7 +315,7 @@ def _replace_audio_in_video(
         "-c:a",
         "aac",
         "-b:a",
-        "192k",
+        "320k",  # High-bitrate AAC - near-transparent quality
         "-shortest",  # Match the shorter stream duration
         str(output_path),
     ]

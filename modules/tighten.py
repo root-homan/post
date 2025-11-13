@@ -37,23 +37,31 @@ except ImportError:
     sys.path.insert(0, str(utils_path))
     from video_editing import concatenate_segments
 
-# dB floor below which audio counts as silence; tune to your mic noise.
-# HIGHER absolute value, the LESS aggressively it cuts.
-SILENCE_THRESHOLD_DB = -22.0
-# SILENCE_THRESHOLD_DB = -22.0 # (for the wireless go 3 mic).
+# ============================================================================
+# SPEECH DETECTION THRESHOLDS
+# ============================================================================
 
-# Minimum silence length (seconds) before we consider trimming it out.
+# High threshold: Definitely speech (strict)
+HIGH_THRESHOLD_DB = -24.0
+
+# Low threshold: Includes speech + quiet edges like consonants, breaths
+# We'll use low-threshold boundaries to expand high-threshold speech regions
+LOW_THRESHOLD_DB = -50.0
+
+# Minimum silence duration: Only cut pauses that are at least this long
 MIN_SILENCE_DURATION_SECONDS = 0.5
-# Extra audio to keep around each internal silence boundary (negative tightens).
+
+# Boundary padding: Extra buffer at each cut point (negative = tighter cuts)
 BOUNDARY_PADDING_SECONDS = 0.1
 
 # Buffer before the first segment so the intro breathes a bit.
-LEADING_EDGE_PADDING_SECONDS = 0.2
+LEADING_EDGE_PADDING_SECONDS = 0.5
 # Buffer after the last segment so the outro isn't abruptly chopped.
 TRAILING_EDGE_PADDING_SECONDS = 3
 
 # Encoding configuration tuned for Apple Silicon hardware acceleration.
 AUDIO_BITRATE = "192k"
+TIGHTEN_AUDIO_CODEC = "pcm_s16le"
 VIDEOTOOLBOX_CODEC = "h264_videotoolbox"
 VIDEOTOOLBOX_GLOBAL_QUALITY = 70
 VIDEOTOOLBOX_PIX_FMT = "yuv420p"
@@ -262,75 +270,157 @@ def _clamp(value: float, lower: float, upper: float) -> float:
     return max(lower, min(upper, value))
 
 
+def _merge_overlapping_regions(regions: List[Tuple[float, float]]) -> List[Tuple[float, float]]:
+    """
+    Merge overlapping or adjacent regions.
+    
+    Args:
+        regions: List of (start, end) tuples
+    
+    Returns:
+        Merged list with no overlaps
+    """
+    if not regions:
+        return regions
+    
+    # Sort by start time
+    sorted_regions = sorted(regions, key=lambda x: x[0])
+    merged = [sorted_regions[0]]
+    
+    for start, end in sorted_regions[1:]:
+        prev_start, prev_end = merged[-1]
+        
+        # If this region overlaps or is adjacent to the previous one, merge them
+        if start <= prev_end:
+            # Extend the previous region
+            merged[-1] = (prev_start, max(prev_end, end))
+        else:
+            # No overlap, add as new region
+            merged.append((start, end))
+    
+    return merged
+
+
+def _expand_to_low_threshold_boundaries(
+    high_speech_regions: List[Tuple[float, float]],
+    low_speech_regions: List[Tuple[float, float]],
+) -> List[Tuple[float, float]]:
+    """
+    Expand high-threshold speech regions to low-threshold boundaries.
+    
+    For each high-threshold speech region, find the low-threshold region(s)
+    that contain or overlap with it, and use those boundaries instead.
+    This captures quiet consonants/word edges without including pure silence.
+    
+    Args:
+        high_speech_regions: Speech regions at high threshold (e.g., -25dB)
+        low_speech_regions: Speech regions at low threshold (e.g., -40dB)
+    
+    Returns:
+        Expanded speech regions using low-threshold boundaries
+    """
+    if not high_speech_regions:
+        return high_speech_regions
+    
+    expanded = []
+    
+    for high_start, high_end in high_speech_regions:
+        # Find all low-threshold regions that overlap with this high-threshold region
+        matching_low_regions = []
+        for low_start, low_end in low_speech_regions:
+            # Check if they overlap
+            if low_end >= high_start and low_start <= high_end:
+                matching_low_regions.append((low_start, low_end))
+        
+        if matching_low_regions:
+            # Use the boundaries from the matching low-threshold regions
+            # Take the earliest start and latest end
+            expanded_start = min(start for start, _ in matching_low_regions)
+            expanded_end = max(end for _, end in matching_low_regions)
+            expanded.append((expanded_start, expanded_end))
+        else:
+            # No matching low region (shouldn't happen), keep original
+            expanded.append((high_start, high_end))
+    
+    # CRITICAL: Merge overlapping regions!
+    # Multiple high regions might expand into the same low region
+    return _merge_overlapping_regions(expanded)
+
+
 def _build_segments_from_silences(
     duration: float,
-    silences: Sequence[SilenceWindow],
+    high_silences: Sequence[SilenceWindow],
+    low_silences: Sequence[SilenceWindow],
     boundary_padding: float,
     leading_padding: float,
     trailing_padding: float,
 ) -> List[Tuple[float, float]]:
     """
-    Build segments by cutting at silences.
+    Build segments by expanding high-threshold speech to low-threshold boundaries.
     
     Args:
         duration: Total video duration
-        silences: Detected silence windows from waveform
+        high_silences: Silence windows at high threshold (e.g., -25dB)
+        low_silences: Silence windows at low threshold (e.g., -40dB)
         boundary_padding: Padding at cut points (negative = tighter)
         leading_padding: Padding before first segment
         trailing_padding: Padding after last segment
     
     Returns:
-        Final segments based purely on silence detection
+        Final segments using low-threshold boundaries where high-threshold speech exists
     """
     
-    # Step 1: Build list of what we're CUTTING (the silence regions with boundary padding)
-    cut_regions: List[Tuple[float, float]] = []
-    
-    for silence in silences:
-        # With boundary_padding = -0.1, we cut TIGHTER (remove more)
-        # silence [10.0 → 12.0] with boundary_padding -0.1 means:
-        # - Cut from (10.0 + (-0.1)) = 9.9 to (12.0 - (-0.1)) = 12.1
-        # This is because negative padding means "cut into the non-silence"
-        cut_start = silence.start + boundary_padding  # For -0.1: start + (-0.1) = start - 0.1
-        cut_end = silence.end - boundary_padding      # For -0.1: end - (-0.1) = end + 0.1
+    # Helper to build speech regions from silences
+    def build_speech_regions(silences: Sequence[SilenceWindow]) -> List[Tuple[float, float]]:
+        regions: List[Tuple[float, float]] = []
+        cursor = 0.0
         
-        cut_start = max(0.0, cut_start)
-        cut_end = min(duration, cut_end)
+        for silence in silences:
+            cut_start = max(0.0, silence.start + boundary_padding)
+            cut_end = min(duration, silence.end - boundary_padding)
+            
+            if cut_start > cursor:
+                regions.append((cursor, cut_start))
+            
+            cursor = max(cursor, cut_end)
         
-        if cut_end > cut_start + 0.01:
-            cut_regions.append((cut_start, cut_end))
-    
-    
-    # Step 2: Build segments by inverting the cut regions
-    segments: List[Tuple[float, float]] = []
-    cursor = 0.0
-    
-    for cut_start, cut_end in cut_regions:
-        # Keep the audio before this cut
-        if cut_start > cursor:
-            segments.append((cursor, cut_start))
+        if cursor < duration:
+            regions.append((cursor, duration))
         
-        # Move cursor to after this cut
-        cursor = max(cursor, cut_end)
+        # Filter out very short regions
+        regions = [(start, end) for start, end in regions if end - start > 0.01]
+        
+        return regions if regions else [(0.0, duration)]
     
-    # Keep anything after the last cut
-    if cursor < duration:
-        segments.append((cursor, duration))
+    # Step 1: Build speech regions at both thresholds
+    high_speech = build_speech_regions(high_silences)
+    low_speech = build_speech_regions(low_silences)
     
-    # Filter out very short segments
-    segments = [(start, end) for start, end in segments if end - start > 0.01]
+    print(f"\n🔍 Expanding speech boundaries...")
+    print(f"    High-threshold speech regions: {len(high_speech)}")
+    print(f"    Low-threshold speech regions: {len(low_speech)}")
     
-    if not segments:
-        segments = [(0.0, duration)]
+    # Step 2: Expand high-threshold regions to low-threshold boundaries
+    expanded_regions = _expand_to_low_threshold_boundaries(high_speech, low_speech)
+    
+    # Calculate how much we expanded
+    high_duration = sum(end - start for start, end in high_speech)
+    low_duration = sum(end - start for start, end in low_speech)
+    expanded_duration = sum(end - start for start, end in expanded_regions)
+    expansion_gained = expanded_duration - high_duration
+    
+    print(f"    High-threshold duration: {high_duration:.2f}s")
+    print(f"    Low-threshold duration: {low_duration:.2f}s")
+    print(f"    Expanded regions: {len(expanded_regions)}")
+    print(f"    Captured additional: {expansion_gained:.2f}s of quiet sounds")
     
     # Step 3: Apply leading/trailing padding
     final_segments = []
     
-    for i, (seg_start, seg_end) in enumerate(segments):
+    for i, (seg_start, seg_end) in enumerate(expanded_regions):
         is_first = (i == 0)
-        is_last = (i == len(segments) - 1)
+        is_last = (i == len(expanded_regions) - 1)
         
-        # Apply leading/trailing padding
         if is_first:
             seg_start = max(0.0, seg_start - leading_padding)
         if is_last:
@@ -422,10 +512,17 @@ def _encode_tightened(
     env: StageEnvironment,
 ) -> None:
     """Concatenate segments using stream copy (requires all-intra source)."""
-    print("🚀 post -tighten: stream copying video, re-encoding audio for perfect sync.")
+    print(
+        f"🚀 post -tighten: stream copying video, encoding audio to lossless PCM ({TIGHTEN_AUDIO_CODEC})."
+    )
     
     try:
-        concatenate_segments(source, destination, segments, audio_bitrate=AUDIO_BITRATE)
+        concatenate_segments(
+            source,
+            destination,
+            segments,
+            audio_codec=TIGHTEN_AUDIO_CODEC,
+        )
     except (ValueError, RuntimeError) as e:
         env.abort(str(e))
     
@@ -529,8 +626,8 @@ def run(args):
     parser.add_argument(
         "--threshold",
         type=float,
-        default=SILENCE_THRESHOLD_DB,
-        help=f"Silence threshold in dB (default: {SILENCE_THRESHOLD_DB})",
+        default=HIGH_THRESHOLD_DB,
+        help=f"High threshold in dB (default: {HIGH_THRESHOLD_DB})",
     )
     parser.add_argument(
         "--min-silence",
@@ -606,24 +703,27 @@ def run(args):
     trailing_padding = parsed.trailing_padding
     duration = _probe_duration(rough_video, env)
     
-    # Detect silences
-    print(f"🔊 Detecting silences...")
-    print(f"    Threshold: {threshold_db:.1f} dB, Min duration: {min_silence:.2f}s\n")
+    # Detect silences at high threshold (strict speech detection)
+    print(f"🔊 Detecting high-threshold silences...")
+    print(f"    High threshold: {threshold_db:.1f} dB, Min duration: {min_silence:.2f}s")
     
-    silences = _detect_silences(rough_video, env, threshold_db, min_silence)
+    high_silences = _detect_silences(rough_video, env, threshold_db, min_silence)
     
-    # Calculate silence statistics
-    total_silence_duration = sum(s.duration for s in silences)
-    remaining_duration = duration - total_silence_duration
+    print(f"✅ High-threshold silences detected: {len(high_silences)} region(s)\n")
     
-    print(f"✅ Silences detected: {len(silences)} region(s)")
-    print(f"    Cutting: {total_silence_duration:.2f}s")
-    print(f"    Remaining: {remaining_duration:.2f}s\n")
+    # Detect silences at low threshold (includes quiet word edges)
+    print(f"🔊 Detecting low-threshold silences...")
+    print(f"    Low threshold: {LOW_THRESHOLD_DB:.1f} dB, Min duration: {min_silence:.2f}s")
     
-    # Build segments from silences
+    low_silences = _detect_silences(rough_video, env, LOW_THRESHOLD_DB, min_silence)
+    
+    print(f"✅ Low-threshold silences detected: {len(low_silences)} region(s)\n")
+    
+    # Build segments by expanding high-threshold speech to low-threshold boundaries
     keep_segments = _build_segments_from_silences(
         duration,
-        silences,
+        high_silences,
+        low_silences,
         boundary_padding=boundary_padding,
         leading_padding=leading_padding,
         trailing_padding=trailing_padding,

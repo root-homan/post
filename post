@@ -62,6 +62,7 @@ def main():
         print("  -convert     Convert rough cut to all-intra H.264 for fast tightening")
         print("  -compress    Compress video with VideoToolbox and crop to 4:3")
         print("  -denoise     Remove background noise from audio using AI models (DeepFilterNet/Facebook)")
+        print("  -separate-audio Extract the audio track from a video file")
         print("  -transcribe  Generate word-level timestamps")
         print("  -essay       Generate essay/transcript from timestamps")
         print("  -captions    Add captions to video")

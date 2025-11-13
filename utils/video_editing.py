@@ -8,7 +8,7 @@ like cutting, concatenating segments, and probing video properties.
 import subprocess
 import tempfile
 from pathlib import Path
-from typing import List, Tuple, Sequence
+from typing import List, Tuple, Sequence, Optional
 
 
 def probe_duration(path: Path) -> float:
@@ -58,18 +58,79 @@ def probe_duration(path: Path) -> float:
         raise RuntimeError(f"Unable to parse duration from ffprobe output: {stdout!r}")
 
 
+def _probe_audio_characteristics(
+    path: Path,
+) -> Tuple[Optional[int], Optional[int]]:
+    """
+    Probe the primary audio stream for sample rate and channel count.
+
+    Returns a tuple of (sample_rate, channels), or (None, None) if unavailable.
+    """
+    process = subprocess.Popen(
+        [
+            "ffprobe",
+            "-v",
+            "error",
+            "-select_streams",
+            "a:0",
+            "-show_entries",
+            "stream=sample_rate,channels",
+            "-of",
+            "csv=p=0",
+            str(path),
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+
+    stdout, stderr = process.communicate()
+    return_code = process.returncode
+
+    if return_code != 0:
+        raise RuntimeError(
+            f"ffprobe failed to inspect audio for '{path.name}': {stderr.strip()}"
+        )
+
+    values = stdout.strip()
+    if not values:
+        return None, None
+
+    parts = [part.strip() for part in values.split(",") if part.strip()]
+    sample_rate: Optional[int] = None
+    channels: Optional[int] = None
+
+    if parts:
+        try:
+            sample_rate = int(parts[0])
+        except (ValueError, IndexError):
+            sample_rate = None
+    if len(parts) > 1:
+        try:
+            channels = int(parts[1])
+        except ValueError:
+            channels = None
+
+    return sample_rate, channels
+
+
 def concatenate_segments(
     source: Path,
     destination: Path,
     segments: Sequence[Tuple[float, float]],
-    audio_bitrate: str = "192k",
+    audio_bitrate: Optional[str] = None,
+    *,
+    audio_codec: str = "pcm_s16le",
+    audio_sample_rate: Optional[int] = None,
+    audio_channels: Optional[int] = None,
 ) -> None:
     """
     Concatenate video segments using stream copy for efficient editing.
     
     This function uses ffmpeg's concat demuxer with stream copy, which allows
     for extremely fast concatenation without re-encoding the video. The audio
-    is re-encoded to AAC to ensure perfect synchronization.
+    is re-encoded using the provided ``audio_codec`` (defaults to lossless PCM)
+    to ensure perfect synchronization and preserve quality for further editing.
     
     **IMPORTANT**: This function requires an all-intra encoded source video
     (e.g., created with 'post -convert'). Using non-intra sources will result
@@ -85,7 +146,13 @@ def concatenate_segments(
         List of (start_time, end_time) tuples in seconds representing
         the segments to keep and concatenate
     audio_bitrate:
-        Audio bitrate for AAC encoding (default: "192k")
+        Optional audio bitrate used when the selected codec requires it (ignored for PCM)
+    audio_codec:
+        Target audio codec (defaults to ``pcm_s16le`` for lossless output)
+    audio_sample_rate:
+        Optional target sample rate; falls back to the source audio sample rate
+    audio_channels:
+        Optional target channel count; falls back to the source audio channel count
         
     Raises
     ------
@@ -131,7 +198,7 @@ def concatenate_segments(
         concat_path = Path(concat_file.name)
 
     try:
-        cmd = [
+        cmd: List[str] = [
             "ffmpeg",
             "-hide_banner",
             "-loglevel",
@@ -146,18 +213,36 @@ def concatenate_segments(
             str(concat_path),
             "-c:v",
             "copy",
-            "-c:a",
-            "aac",
-            "-b:a",
-            audio_bitrate,
-            "-fflags",
-            "+genpts",
-            "-avoid_negative_ts",
-            "make_zero",
-            "-movflags",
-            "+faststart",
-            str(destination),
         ]
+        if audio_codec == "copy":
+            cmd.extend(["-c:a", "copy"])
+        else:
+            cmd.extend(["-c:a", audio_codec])
+            if audio_bitrate and not audio_codec.startswith("pcm"):
+                cmd.extend(["-b:a", audio_bitrate])
+            sample_rate = audio_sample_rate
+            channels = audio_channels
+            if sample_rate is None or channels is None:
+                probed_rate, probed_channels = _probe_audio_characteristics(source)
+                sample_rate = sample_rate or probed_rate
+                channels = channels or probed_channels
+            if sample_rate:
+                cmd.extend(["-ar", str(sample_rate)])
+            if channels:
+                cmd.extend(["-ac", str(channels)])
+            # Critical for A/V sync when re-encoding audio with concat demuxer
+            cmd.extend(["-af", "aresample=async=1"])
+        cmd.extend(
+            [
+                "-fflags",
+                "+genpts",
+                "-avoid_negative_ts",
+                "make_zero",
+                "-movflags",
+                "+faststart",
+                str(destination),
+            ]
+        )
         result = subprocess.run(cmd, capture_output=True, text=True)
         if result.returncode != 0:
             raise RuntimeError(f"ffmpeg concat failed: {result.stderr.strip()}")
