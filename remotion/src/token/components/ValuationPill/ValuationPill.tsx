@@ -5,16 +5,11 @@ import valuationStyles from "./ValuationPill.module.css";
 
 interface ValuationPillProps {
   valuation: number;
-  label?: string;
 }
 
-export const ValuationPill: React.FC<ValuationPillProps> = ({
-  valuation,
-  label = "Valuation",
-}) => {
+export const ValuationPill: React.FC<ValuationPillProps> = ({ valuation }) => {
   return (
     <div className={valuationStyles.root} style={valuationStylesMap.container}>
-      <span style={valuationStylesMap.label}>{label}</span>
       <span style={valuationStylesMap.value}>{formatCurrencyCompact(valuation)}</span>
     </div>
   );
@@ -24,23 +19,16 @@ const valuationStylesMap = {
   container: {
     display: "inline-flex",
     alignItems: "center",
-    gap: 12,
-    padding: "20px 32px",
-    borderRadius: 40,
+    padding: "var(--valuation-pill-padding-vertical) var(--valuation-pill-padding-horizontal)",
+    borderRadius: "var(--token-card-border-radius)",
     background: "var(--valuation-pill-background)",
     color: "var(--valuation-pill-foreground)",
-    fontFamily: "Sohne, Inter, -apple-system, BlinkMacSystemFont, sans-serif",
-    fontWeight: 600,
-    fontSize: 48,
-    letterSpacing: "-0.01em",
-    boxShadow: "var(--valuation-pill-shadow)",
-  },
-  label: {
-    fontSize: 32,
-    fontWeight: 500,
-    color: "var(--valuation-pill-label-color)",
   },
   value: {
+    fontFamily: "'Geist Mono', 'SF Mono', Monaco, Consolas, monospace",
+    fontSize: "var(--valuation-pill-font-size)",
+    fontWeight: "var(--valuation-pill-font-weight)",
     fontVariantNumeric: "tabular-nums" as const,
+    letterSpacing: "var(--valuation-pill-letter-spacing)",
   },
 };

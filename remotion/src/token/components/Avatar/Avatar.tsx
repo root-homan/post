@@ -14,9 +14,9 @@ interface AvatarProps {
 export const Avatar: React.FC<AvatarProps> = ({
   name,
   profileSrc,
-  size = 128,
-  borderColor = "rgba(255, 255, 255, 0.32)",
-  borderWidth = 4,
+  size,
+  borderColor,
+  borderWidth,
 }) => {
   const initials = getInitials(name);
   const containerStyle = createContainerStyle(size, borderWidth, borderColor);
@@ -53,23 +53,21 @@ const baseStyles = {
     alignItems: "center",
     justifyContent: "center",
     fontFamily: "Sohne, Inter, -apple-system, BlinkMacSystemFont, sans-serif",
-    fontWeight: 600,
-    color: "var(--avatar-initial-color, #2b2f37)",
-    background:
-      "var(--avatar-background, linear-gradient(135deg, #f2f4f8 0%, #e2e6ef 100%))",
+    fontWeight: "var(--avatar-fallback-font-weight)",
+    color: "var(--avatar-fallback-color)",
+    background: "var(--avatar-fallback-background)",
   },
 };
 
 const createContainerStyle = (
-  size: number,
-  borderWidth: number,
-  borderColor: string
+  size?: number,
+  borderWidth?: number,
+  borderColor?: string
 ) => ({
-  width: size,
-  height: size,
-  borderRadius: size / 2,
+  width: size ?? "var(--avatar-size)",
+  height: size ?? "var(--avatar-size)",
+  borderRadius: size ? size / 2 : "calc(var(--avatar-size) / 2)",
   overflow: "hidden" as const,
   position: "relative" as const,
-  border: `${borderWidth}px solid ${borderColor}`,
-  boxShadow: "var(--avatar-shadow, 0 10px 30px rgba(15, 25, 40, 0.12))",
+  border: `${borderWidth ?? "var(--avatar-border-width)"} solid ${borderColor ?? "var(--avatar-border-color)"}`,
 });

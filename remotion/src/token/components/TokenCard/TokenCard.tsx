@@ -1,12 +1,6 @@
-import React, { useMemo } from "react";
+import React from "react";
 
-import {
-  Annotation,
-  CameraFocus,
-  Segment,
-  Token,
-  TokenComponent,
-} from "../../types";
+import { Segment, Token } from "../../types";
 import { HolderList } from "../HolderList/HolderList";
 import { SegmentControl } from "../SegmentControl/SegmentControl";
 import { TokenBio } from "../TokenBio/TokenBio";
@@ -16,47 +10,22 @@ import tokenCardStyles from "./TokenCard.module.css";
 interface TokenCardProps {
   token: Token;
   segment: Segment;
-  isExpanded: boolean;
-  annotations?: Annotation[];
-  lightFocus?: TokenComponent[];
-  cameraFocus?: CameraFocus;
 }
 
-export const TokenCard: React.FC<TokenCardProps> = ({
-  token,
-  segment,
-  isExpanded: _isExpanded,
-  annotations: _annotations,
-  lightFocus,
-  cameraFocus: _cameraFocus,
-}) => {
-  const headerOpacity = useSectionOpacity(lightFocus, [
-    TokenComponent.Name,
-    TokenComponent.Valuation,
-  ]);
-  const bioOpacity = useSectionOpacity(lightFocus, [TokenComponent.Bio]);
-  const controlOpacity = useSectionOpacity(lightFocus, [
-    TokenComponent.HoldersPane,
-    TokenComponent.HoldingsPane,
-  ]);
-  const listOpacity = useSectionOpacity(lightFocus, [
-    segment === Segment.Holders
-      ? TokenComponent.HoldersPane
-      : TokenComponent.HoldingsPane,
-  ]);
-
+export const TokenCard: React.FC<TokenCardProps> = ({ token, segment }) => {
   return (
     <div className={tokenCardStyles.root} style={tokenCardStylesMap.container}>
-      <div style={{ ...tokenCardStylesMap.header, ...tokenCardStylesMap.row(headerOpacity) }}>
+      {/* User Group: Header + Bio */}
+      <div style={tokenCardStylesMap.userGroup}>
         <TokenHeader owner={token.owner} valuation={token.valuation} />
-      </div>
-      <div style={tokenCardStylesMap.row(bioOpacity)}>
         <TokenBio bio={token.owner.bio} />
       </div>
-      <div style={tokenCardStylesMap.row(controlOpacity)}>
-        <SegmentControl currentSegment={segment} />
-      </div>
-      <div style={tokenCardStylesMap.row(listOpacity)}>
+
+      {/* List Group: Segment Control + List */}
+      <div style={tokenCardStylesMap.listGroup}>
+        <div style={tokenCardStylesMap.segmentControlWrapper}>
+          <SegmentControl currentSegment={segment} />
+        </div>
         <HolderList
           holders={token.holders}
           holdings={token.holdings}
@@ -67,41 +36,44 @@ export const TokenCard: React.FC<TokenCardProps> = ({
   );
 };
 
-const useSectionOpacity = (
-  lightFocus: TokenComponent[] | undefined,
-  componentTargets: TokenComponent[]
-) => {
-  return useMemo(() => {
-    if (!lightFocus || lightFocus.length === 0) {
-      return 1;
-    }
-
-    if (lightFocus.includes(TokenComponent.Entire)) {
-      return 1;
-    }
-
-    return componentTargets.some((component) => lightFocus.includes(component))
-      ? 1
-      : 0.25;
-  }, [lightFocus, componentTargets]);
-};
-
 const tokenCardStylesMap = {
   container: {
     width: 1280,
-    borderRadius: 72,
-    background: "var(--token-card-background)",
-    padding: "96px 120px",
+    borderRadius: "var(--token-card-border-radius)",
+    background: "var(--token-card-surface-base)",
+    border: "var(--token-card-border)",
     boxShadow: "var(--token-card-shadow)",
     display: "flex",
     flexDirection: "column" as const,
-    gap: 64,
+    overflow: "hidden" as const,
   },
-  header: {
+  userGroup: {
     width: "100%",
+    padding: "var(--token-card-padding)",
+    display: "flex",
+    flexDirection: "column" as const,
+    gap: "var(--token-card-inner-gap)",
+    borderRadius: "var(--token-card-border-radius)",
+    background: "var(--token-card-surface-hero)",
+    border: "var(--token-card-border)",
+    boxShadow: "var(--token-card-hero-shadow)",
+    position: "relative" as const,
+    zIndex: 1,
   },
-  row: (opacity: number) => ({
-    opacity,
-    transition: "opacity 200ms ease",
-  }),
+  listGroup: {
+    width: "100%",
+    padding: "var(--token-card-padding)",
+    display: "flex",
+    flexDirection: "column" as const,
+    gap: "var(--token-card-inner-gap)",
+    alignItems: "flex-start" as const,
+    borderRadius: 0,
+    background: "var(--token-card-surface-base)",
+    boxShadow: "var(--token-card-drawer-shadow)",
+    border: "none",
+  },
+  segmentControlWrapper: {
+    alignSelf: "flex-start" as const,
+    width: "max-content",
+  },
 };

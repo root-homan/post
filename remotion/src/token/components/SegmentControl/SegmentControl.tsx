@@ -58,33 +58,34 @@ const segmentStyles = {
   container: {
     display: "inline-flex",
     alignItems: "center",
-    justifyContent: "center",
-    padding: 12,
-    gap: 12,
-    borderRadius: 56,
+    justifyContent: "flex-start",
+    padding: "var(--segment-control-padding)",
+    gap: "var(--segment-control-gap)",
+    borderRadius: "var(--token-card-border-radius)",
+    border: "var(--segment-control-border)",
     background: "var(--segment-control-background)",
-    boxShadow: "var(--segment-control-shadow)",
   },
   optionBase: {
     display: "flex",
     alignItems: "center",
     justifyContent: "center",
-    padding: "20px 72px",
-    borderRadius: 48,
-    fontFamily: "Sohne, Inter, -apple-system, BlinkMacSystemFont, sans-serif",
-    fontSize: 40,
-    fontWeight: 600,
-    letterSpacing: "-0.01em",
+    padding: "var(--segment-control-pill-padding-vertical) var(--segment-control-pill-padding-horizontal)",
+    borderRadius: "var(--segment-control-pill-radius)",
+    border: "1px solid transparent",
+    fontFamily: "Inter, -apple-system, BlinkMacSystemFont, sans-serif",
+    fontSize: "var(--segment-control-label-size)",
+    fontWeight: "var(--segment-control-label-font-weight)",
+    letterSpacing: "var(--segment-control-label-letter-spacing)",
     cursor: "pointer",
     transition: "all 200ms ease",
   },
   getOptionStyle: (isActive: boolean) => ({
+    borderRadius: "var(--segment-control-pill-radius)",
     color: isActive
       ? "var(--segment-control-active-color)"
       : "var(--segment-control-inactive-color)",
     background: isActive
       ? "var(--segment-control-active-background)"
       : "transparent",
-    boxShadow: isActive ? "var(--segment-control-active-shadow)" : "none",
   }),
 };

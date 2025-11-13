@@ -1,6 +1,4 @@
 .root {
-  --valuation-pill-background: linear-gradient(135deg, #d9fbe2 0%, #c0f1d2 100%);
-  --valuation-pill-foreground: #0b7b38;
-  --valuation-pill-label-color: rgba(11, 123, 56, 0.72);
-  --valuation-pill-shadow: 0 18px 44px rgba(14, 88, 45, 0.18);
+  /* All design tokens defined in TokenCard.module.css */
+  display: contents;
 }

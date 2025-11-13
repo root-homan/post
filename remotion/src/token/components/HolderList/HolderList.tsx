@@ -16,23 +16,19 @@ export const HolderList: React.FC<HolderListProps> = ({
   segment,
 }) => {
   const isHoldersSegment = segment === Segment.Holders;
-  const title = isHoldersSegment ? "Holders" : "Holdings";
   const items = isHoldersSegment ? sortHolders(holders) : sortHoldings(holdings);
 
   return (
     <div className={holderListStyles.root} style={holderListStylesMap.container}>
-      <span style={holderListStylesMap.title}>{title}</span>
-      <div style={holderListStylesMap.list}>
-        {items.map((item, index) => (
-          <HolderRow
-            key={`${item.entity.name}-${index}`}
-            entity={item.entity}
-            percentageEquity={item.percentageEquity}
-            valuation={!isHoldersSegment ? (item as Holding).valuation : undefined}
-            index={index}
-          />
-        ))}
-      </div>
+      {items.map((item, index) => (
+        <HolderRow
+          key={`${item.entity.name}-${index}`}
+          entity={item.entity}
+          percentageEquity={item.percentageEquity}
+          valuation={!isHoldersSegment ? (item as Holding).valuation : undefined}
+          index={index}
+        />
+      ))}
     </div>
   );
 };
@@ -42,19 +38,7 @@ const holderListStylesMap = {
     width: "100%",
     display: "flex",
     flexDirection: "column" as const,
-    gap: 32,
-  },
-  title: {
-    fontFamily: "Sohne, Inter, -apple-system, BlinkMacSystemFont, sans-serif",
-    fontSize: 48,
-    fontWeight: 640,
-    color: "var(--holder-list-title-color)",
-    letterSpacing: "-0.01em",
-  },
-  list: {
-    display: "flex",
-    flexDirection: "column" as const,
-    gap: 24,
+    gap: "var(--spacing-unit)", // <S> - matches all other internal spacing
   },
 };
 

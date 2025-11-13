@@ -1,4 +1,4 @@
 .root {
-  --token-header-name-color: #20242d;
-  --token-header-handle-color: rgba(32, 36, 45, 0.56);
+  /* All design tokens defined in TokenCard.module.css */
+  display: contents;
 }

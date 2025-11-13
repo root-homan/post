@@ -1,3 +1,4 @@
 .root {
-  --token-bio-color: rgba(26, 31, 42, 0.78);
+  /* All design tokens defined in TokenCard.module.css */
+  display: contents;
 }

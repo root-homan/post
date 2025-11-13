@@ -21,11 +21,12 @@ export const TokenBio: React.FC<TokenBioProps> = ({ bio }) => {
 const bioStylesMap = {
   container: {
     width: "100%",
+    margin: 0, // Remove default <p> margins
     fontFamily: "Inter, -apple-system, BlinkMacSystemFont, sans-serif",
-    fontSize: 48,
-    fontWeight: 450,
+    fontSize: "var(--token-bio-font-size)",
+    fontWeight: "var(--token-bio-font-weight)",
     color: "var(--token-bio-color)",
-    letterSpacing: "-0.01em",
-    lineHeight: 1.35,
+    letterSpacing: "var(--token-bio-letter-spacing)",
+    lineHeight: "var(--token-bio-line-height)",
   },
 };

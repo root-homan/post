@@ -7,7 +7,7 @@ export const TOKEN_SCENE_PREVIEW_PROPS: TokenSceneInput = {
     owner: {
       name: "Alice",
       profileSrc:
-        "https://images.unsplash.com/photo-1544723795-3fb6469f5b39?auto=format&fit=crop&w=200&q=80",
+        "https://images.unsplash.com/photo-1494790108377-be9c29b29330?auto=format&fit=crop&w=400&q=80&sat=-100",
       bio: "i <3 design and storytelling.",
     },
     holders: [
@@ -15,7 +15,7 @@ export const TOKEN_SCENE_PREVIEW_PROPS: TokenSceneInput = {
         entity: {
           name: "_self",
           profileSrc:
-            "https://images.unsplash.com/photo-1544723795-3fb6469f5b39?auto=format&fit=crop&w=200&q=80",
+            "https://images.unsplash.com/photo-1494790108377-be9c29b29330?auto=format&fit=crop&w=400&q=80&sat=-100",
         },
         percentageEquity: 99,
       },
@@ -23,7 +23,7 @@ export const TOKEN_SCENE_PREVIEW_PROPS: TokenSceneInput = {
         entity: {
           name: "Bob",
           profileSrc:
-            "https://images.unsplash.com/photo-1506794778202-cad84cf45f1d?auto=format&fit=crop&w=200&q=80",
+            "https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?auto=format&fit=crop&w=400&q=80&sat=-100",
         },
         percentageEquity: 1,
       },
@@ -33,7 +33,7 @@ export const TOKEN_SCENE_PREVIEW_PROPS: TokenSceneInput = {
         entity: {
           name: "StoryLab",
           profileSrc:
-            "https://images.unsplash.com/photo-1545239351-1141bd82e8a6?auto=format&fit=crop&w=200&q=80",
+            "https://images.unsplash.com/photo-1438761681033-6461ffad8d80?auto=format&fit=crop&w=400&q=80&sat=-100",
         },
         percentageEquity: 35,
         valuation: 3_500_000,
@@ -42,7 +42,7 @@ export const TOKEN_SCENE_PREVIEW_PROPS: TokenSceneInput = {
         entity: {
           name: "Narrative Ventures",
           profileSrc:
-            "https://images.unsplash.com/photo-1472099645785-5658abf4ff4e?auto=format&fit=crop&w=200&q=80",
+            "https://images.unsplash.com/photo-1500648767791-00dcc994a43e?auto=format&fit=crop&w=400&q=80&sat=-100",
         },
         percentageEquity: 15,
         valuation: 1_500_000,

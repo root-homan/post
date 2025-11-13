@@ -1,3 +1,4 @@
 .root {
-  --holder-list-title-color: rgba(28, 32, 40, 0.88);
+  /* All design tokens defined in TokenCard.module.css */
+  display: contents;
 }

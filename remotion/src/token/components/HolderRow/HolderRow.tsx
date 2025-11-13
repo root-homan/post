@@ -21,11 +21,11 @@ export const HolderRow: React.FC<HolderRowProps> = ({
   return (
     <div className={holderRowStyles.root} style={holderRowStylesMap.container}>
       <div style={holderRowStylesMap.profile}>
-        <Avatar name={entity.name} profileSrc={entity.profileSrc} size={100} />
-        <div style={holderRowStylesMap.textStack}>
-          <span style={holderRowStylesMap.name}>{entity.name}</span>
-          <span style={holderRowStylesMap.subtitle}>Rank #{index + 1}</span>
-        </div>
+        <Avatar 
+          name={entity.name} 
+          profileSrc={entity.profileSrc}
+        />
+        <span style={holderRowStylesMap.name}>{entity.name}</span>
       </div>
       <div style={holderRowStylesMap.meta}>
         <span>{formatPercentage(percentageEquity)}</span>
@@ -45,52 +45,40 @@ const holderRowStylesMap = {
     flexDirection: "row" as const,
     alignItems: "center",
     justifyContent: "space-between",
-    padding: "28px 36px",
-    borderRadius: 52,
+    padding: "var(--list-item-padding-vertical) var(--list-item-padding-horizontal)",
+    borderRadius: "var(--token-card-border-radius)",
     background: "var(--holder-row-background)",
-    boxShadow: "var(--holder-row-shadow)",
     minWidth: 680,
-    gap: 36,
+    gap: "var(--holder-row-gap)",
   },
   profile: {
     display: "flex",
     flexDirection: "row" as const,
     alignItems: "center",
-    gap: 24,
-  },
-  textStack: {
-    display: "flex",
-    flexDirection: "column" as const,
-    gap: 4,
+    gap: "var(--holder-row-profile-gap)",
   },
   name: {
-    fontFamily: "Sohne, Inter, -apple-system, BlinkMacSystemFont, sans-serif",
-    fontSize: 44,
-    fontWeight: 600,
-    color: "var(--holder-row-name-color)",
-    letterSpacing: "-0.01em",
-  },
-  subtitle: {
     fontFamily: "Inter, -apple-system, BlinkMacSystemFont, sans-serif",
-    fontSize: 32,
-    fontWeight: 500,
-    color: "var(--holder-row-subtitle-color)",
-    letterSpacing: "-0.01em",
+    fontSize: "var(--token-card-heading-font-size)",
+    fontWeight: "var(--holder-row-name-font-weight)",
+    color: "var(--holder-row-name-color)",
+    letterSpacing: "var(--holder-row-name-letter-spacing)",
   },
   meta: {
     display: "flex",
     flexDirection: "column" as const,
     alignItems: "flex-end" as const,
-    gap: 6,
-    fontFamily: "Inter, -apple-system, BlinkMacSystemFont, sans-serif",
-    fontWeight: 600,
-    fontSize: 40,
+    gap: "var(--holder-row-meta-gap)",
+    fontFamily: "'Geist Mono', 'SF Mono', Monaco, Consolas, monospace",
+    fontWeight: "var(--holder-row-meta-font-weight)",
+    fontSize: "var(--holder-row-meta-font-size)",
     color: "var(--holder-row-meta-color)",
-    letterSpacing: "-0.01em",
+    letterSpacing: "var(--holder-row-meta-letter-spacing)",
+    fontVariantNumeric: "tabular-nums" as const,
   },
   secondaryMeta: {
-    fontSize: 32,
-    fontWeight: 500,
+    fontSize: "var(--holder-row-meta-font-size)",
+    fontWeight: "var(--holder-row-meta-font-weight)",
     color: "var(--holder-row-secondary-meta-color)",
   },
 };
