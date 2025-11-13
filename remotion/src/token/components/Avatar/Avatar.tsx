@@ -9,6 +9,7 @@ interface AvatarProps {
   size?: number;
   borderColor?: string;
   borderWidth?: number;
+  variant?: "header" | "list"; // Use header or list avatar size
 }
 
 export const Avatar: React.FC<AvatarProps> = ({
@@ -17,9 +18,10 @@ export const Avatar: React.FC<AvatarProps> = ({
   size,
   borderColor,
   borderWidth,
+  variant = "header",
 }) => {
   const initials = getInitials(name);
-  const containerStyle = createContainerStyle(size, borderWidth, borderColor);
+  const containerStyle = createContainerStyle(size, borderWidth, borderColor, variant);
 
   return (
     <div className={avatarStyles.root} style={containerStyle}>
@@ -62,12 +64,24 @@ const baseStyles = {
 const createContainerStyle = (
   size?: number,
   borderWidth?: number,
-  borderColor?: string
-) => ({
-  width: size ?? "var(--avatar-size)",
-  height: size ?? "var(--avatar-size)",
-  borderRadius: size ? size / 2 : "calc(var(--avatar-size) / 2)",
-  overflow: "hidden" as const,
-  position: "relative" as const,
-  border: `${borderWidth ?? "var(--avatar-border-width)"} solid ${borderColor ?? "var(--avatar-border-color)"}`,
-});
+  borderColor?: string,
+  variant: "header" | "list" = "header"
+) => {
+  const sizeVar = variant === "header" ? "var(--avatar-size-header)" : "var(--avatar-size-list)";
+  
+  // If size is provided as a number, calculate border width automatically
+  if (size && !borderWidth) {
+    borderWidth = size / 20; // Automatically scale: 80px -> 4px
+  }
+  
+  return {
+    width: size ?? sizeVar,
+    height: size ?? sizeVar,
+    borderRadius: size ? size / 2 : `calc(${sizeVar} / 2)`,
+    overflow: "hidden" as const,
+    position: "relative" as const,
+    border: borderWidth 
+      ? `${borderWidth}px solid ${borderColor ?? "var(--avatar-border-color)"}` 
+      : `calc(${sizeVar} / var(--avatar-border-width-ratio)) solid ${borderColor ?? "var(--avatar-border-color)"}`,
+  };
+};

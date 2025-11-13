@@ -1,7 +1,27 @@
+/* ===============================================================================
+   VARIABLE FONTS - Support any font weight from 100-900
+   =============================================================================== */
+
+/* Inter Variable Font - supports weights 100-900 */
+@import url("https://fonts.googleapis.com/css2?family=Inter:opsz,wght@14..32,100..900&display=swap");
+
+/* Geist Mono Variable Font - supports weights 100-900 */
+@font-face {
+  font-family: "Geist Mono";
+  src: url("https://unpkg.com/geist@latest/dist/fonts/mono/GeistMonoVF.woff2")
+    format("woff2");
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
+
 .root {
   /* ===============================================================================
      🎨 CENTRALIZED DESIGN TOKENS - ALL COMPONENT STYLES IN ONE PLACE
      =============================================================================== */
+
+  /* ===== GLOBAL: DIMENSIONS ===== */
+  --token-card-width: 1024px; /* ← TWEAK THIS: Main card width (everything else adapts) */
 
   /* ===== GLOBAL: SPACING ===== */
   --spacing-unit: 32px; /* <S> - Base spacing unit */
@@ -20,9 +40,13 @@
   --token-card-drawer-shadow: none;
 
   /* ===== GLOBAL: TYPOGRAPHY ===== */
-  --token-card-heading-font-size: 48px; /* ← TWEAK THIS: Main heading size */
+  --base-font-size: 48px; /* ← TWEAK THIS: Base font size used everywhere */
+  --inter-font-weight: 420; /* ← TWEAK THIS: Font weight for all Inter (sans-serif) text */
+  --geist-font-weight: 400; /* ← TWEAK THIS: Font weight for all Geist Mono text */
+
+  --token-card-heading-font-size: var(--base-font-size);
   --token-card-heading-color: #000000; /* Black text for headings */
-  --token-card-heading-font-weight: 500; /* ← TWEAK THIS */
+  --token-card-heading-font-weight: var(--inter-font-weight);
   --token-card-heading-letter-spacing: -0.01em; /* ← TWEAK THIS */
 
   /* Font Size Adjustments - Geist Mono renders larger than Inter at same px */
@@ -41,10 +65,9 @@
   --token-card-rail-border: 1px solid rgba(0, 0, 0, 0.04); /* ← TWEAK THIS: Subtle border */
   --token-card-border: 1px solid rgba(0, 0, 0, 0.03); /* ← TWEAK THIS: Card border */
 
-  /* ===== AVATAR (Used in Token Header & Holder Rows) ===== */
-  --avatar-size: 80px; /* ← TWEAK THIS: Avatar diameter */
+  /* ===== AVATAR (Shared styles) ===== */
   --avatar-border-color: #000000; /* ← TWEAK THIS: Black ring around avatars */
-  --avatar-border-width: 4px; /* ← TWEAK THIS: Avatar border thickness */
+  --avatar-border-width-ratio: 20; /* Border width = avatar size ÷ this ratio (80px ÷ 20 = 4px) */
   --avatar-fallback-font-weight: 600; /* Weight for initials */
   --avatar-fallback-color: #2b2f37; /* Initials text color */
   --avatar-fallback-background: linear-gradient(
@@ -52,6 +75,10 @@
     #f2f4f8 0%,
     #e2e6ef 100%
   ); /* Fallback gradient */
+
+  /* Avatar Sizes */
+  --avatar-size-header: 80px; /* ← TWEAK THIS: Avatar size in Token Header */
+  --avatar-size-list: 80px; /* ← TWEAK THIS: Avatar size in Holder Rows */
 
   /* ===== TOKEN HEADER ===== */
   --token-header-name-color: var(--token-card-heading-color); /* Black */
@@ -71,25 +98,21 @@
     0,
     0,
     0,
-    0.5
+    0.4
   ); /* ← TWEAK THIS: Black at 50% opacity */
-  --token-bio-font-size: 48px; /* ← TWEAK THIS */
-  --token-bio-font-weight: 400; /* ← TWEAK THIS */
-  --token-bio-line-height: 1.5; /* ← TWEAK THIS */
-  --token-bio-letter-spacing: -0.01em;
+  --token-bio-font-size: var(--base-font-size);
+  --token-bio-font-weight: var(--inter-font-weight);
+  --token-bio-line-height: 1.35; /* ← TWEAK THIS */
+  --token-bio-letter-spacing: -0em;
 
   /* ===== VALUATION PILL ===== */
-  --valuation-pill-background: linear-gradient(
-    135deg,
-    #d9fbe2 0%,
-    #c0f1d2 100%
-  ); /* ← TWEAK THIS: Green gradient */
-  --valuation-pill-foreground: #0b7b38; /* ← TWEAK THIS: Dark green text */
-  --valuation-pill-label-color: rgba(11, 123, 56, 0.72); /* Muted green label */
+  --valuation-pill-background: #e1ffe9;
+  --valuation-pill-foreground: #00bf4c; /* ← TWEAK THIS: Dark green text */
+  --valuation-pill-label-color: #00bf4c;
   --valuation-pill-font-size: calc(
     45px * var(--geist-mono-size-adjustment)
   ); /* Adjusted for Geist Mono */
-  --valuation-pill-font-weight: 500; /* ← TWEAK THIS */
+  --valuation-pill-font-weight: var(--geist-font-weight);
   --valuation-pill-letter-spacing: -0.01em;
   --valuation-pill-padding-vertical: 20px; /* ← TWEAK THIS */
   --valuation-pill-padding-horizontal: var(
@@ -108,11 +131,9 @@
     0,
     0.4
   ); /* ← TWEAK THIS: Black at 40% opacity */
-  --segment-control-border: var(--token-card-rail-border);
-  --segment-control-label-size: calc(
-    var(--token-card-heading-font-size) * 0.75
-  );
-  --segment-control-label-font-weight: 500; /* ← TWEAK THIS */
+  --segment-control-border: none;
+  --segment-control-label-size: calc(var(--base-font-size) * 0.75);
+  --segment-control-label-font-weight: 500;
   --segment-control-label-letter-spacing: -0.01em;
   --segment-control-pill-radius: calc(var(--token-card-border-radius) * 0.7);
   --segment-control-padding: 10px; /* ← TWEAK THIS: Container padding */
@@ -141,7 +162,7 @@
   --holder-row-meta-font-size: calc(
     45px * var(--geist-mono-size-adjustment)
   ); /* Adjusted for Geist Mono */
-  --holder-row-meta-font-weight: 500; /* ← TWEAK THIS */
+  --holder-row-meta-font-weight: var(--geist-font-weight);
   --holder-row-meta-letter-spacing: -0.01em;
   --holder-row-secondary-meta-color: rgba(
     0,

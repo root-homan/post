@@ -8,7 +8,7 @@ export const TOKEN_SCENE_PREVIEW_PROPS: TokenSceneInput = {
       name: "Alice",
       profileSrc:
         "https://images.unsplash.com/photo-1494790108377-be9c29b29330?auto=format&fit=crop&w=400&q=80&sat=-100",
-      bio: "i <3 design and storytelling.",
+      bio: "i <3 design, storytelling & exploring interesting ideas.",
     },
     holders: [
       {

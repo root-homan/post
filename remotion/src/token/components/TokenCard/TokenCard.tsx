@@ -38,7 +38,7 @@ export const TokenCard: React.FC<TokenCardProps> = ({ token, segment }) => {
 
 const tokenCardStylesMap = {
   container: {
-    width: 1280,
+    width: "var(--token-card-width)",
     borderRadius: "var(--token-card-border-radius)",
     background: "var(--token-card-surface-base)",
     border: "var(--token-card-border)",

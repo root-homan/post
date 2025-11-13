@@ -24,6 +24,7 @@ export const HolderRow: React.FC<HolderRowProps> = ({
         <Avatar 
           name={entity.name} 
           profileSrc={entity.profileSrc}
+          variant="list"
         />
         <span style={holderRowStylesMap.name}>{entity.name}</span>
       </div>
@@ -48,7 +49,7 @@ const holderRowStylesMap = {
     padding: "var(--list-item-padding-vertical) var(--list-item-padding-horizontal)",
     borderRadius: "var(--token-card-border-radius)",
     background: "var(--holder-row-background)",
-    minWidth: 680,
+    width: "100%", // Adapts to container width
     gap: "var(--holder-row-gap)",
   },
   profile: {
