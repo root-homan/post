@@ -3,6 +3,7 @@ export type Region = {
   y: number; // pixels from top
   width: number; // pixels
   height: number; // pixels
+  note?: string; // optional label text that appears to the right of the focus area
 };
 
 export type FocusState = {

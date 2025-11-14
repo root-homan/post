@@ -71,6 +71,7 @@ const createHoldersRegion = (
     y: regionTop,
     width: regionWidth,
     height: regionHeight,
+    note: "shared equity",
   };
 };
 

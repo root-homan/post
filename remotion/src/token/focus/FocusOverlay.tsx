@@ -108,6 +108,19 @@ export const FocusOverlay: React.FC<FocusOverlayProps> = ({
           />
         ))}
       </div>
+      <div style={styles.notes}>
+        {regions.map((region, index) => {
+          if (!region.note) return null;
+          return (
+            <div
+              key={`note-${index}`}
+              style={createNoteStyles(region, spotlightIntensity)}
+            >
+              {region.note}
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 };
@@ -132,6 +145,12 @@ const styles = {
     inset: 0,
     pointerEvents: "none" as const,
     zIndex: 1001,
+  },
+  notes: {
+    position: "absolute" as const,
+    inset: 0,
+    pointerEvents: "none" as const,
+    zIndex: 1002,
   },
 };
 
@@ -158,5 +177,25 @@ const createHighlightStyles = (
     mixBlendMode: "screen" as const,
     pointerEvents: "none" as const,
     transform: `scale(${(1 + 0.03 * intensity).toFixed(3)})`,
+  };
+};
+
+const createNoteStyles = (region: Region, intensity: number) => {
+  const noteMargin = 24;
+  const left = region.x + region.width + noteMargin;
+  const top = region.y + region.height / 2;
+
+  return {
+    position: "absolute" as const,
+    left: left,
+    top: top,
+    transform: `translateY(-50%) translateX(${(1 - intensity) * -20}px)`,
+    opacity: intensity,
+    color: "white",
+    fontSize: 60,
+    fontFamily: "inter, sans-serif",
+    fontWeight: 420,
+    pointerEvents: "none" as const,
+    whiteSpace: "nowrap" as const,
   };
 };
