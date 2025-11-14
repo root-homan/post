@@ -1,12 +1,22 @@
 import React from "react";
-import { AbsoluteFill, interpolate, spring, useCurrentFrame, useVideoConfig } from "remotion";
+import {
+  AbsoluteFill,
+  interpolate,
+  spring,
+  useCurrentFrame,
+  useVideoConfig,
+} from "remotion";
 import { AnimatedLogo } from "./AnimatedLogo";
 
 export const AnimatedLogoPreview: React.FC = () => {
   const frame = useCurrentFrame();
-  const { fps } = useVideoConfig();
+  const { fps, durationInFrames } = useVideoConfig();
 
-  const delayFrames = 10;
+  // Split the composition duration in half:
+  // First half: fully transparent
+  // Second half: animation with fade-in
+  const transparencyDuration = durationInFrames / 2;
+  const delayFrames = transparencyDuration + 10;
   const fadeInDurationInFrames = 12;
 
   // Fade-in animation for background (same as logo rings)
@@ -30,8 +40,8 @@ export const AnimatedLogoPreview: React.FC = () => {
         backgroundColor: `rgba(255, 255, 255, ${backgroundOpacity})`,
       }}
     >
-      <AnimatedLogo 
-        size={200} 
+      <AnimatedLogo
+        size={200}
         color="#000000"
         durationInFrames={24}
         delayFrames={delayFrames}
@@ -49,4 +59,3 @@ const styles = {
     alignItems: "center",
   } as React.CSSProperties,
 };
-

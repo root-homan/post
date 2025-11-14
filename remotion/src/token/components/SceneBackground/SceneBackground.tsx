@@ -1,5 +1,6 @@
 import React, { useMemo } from "react";
 import { AbsoluteFill, useCurrentFrame, random } from "remotion";
+import { Logo } from "../Logo/Logo";
 
 export const SceneBackground: React.FC = () => {
   const frame = useCurrentFrame();
@@ -58,6 +59,11 @@ export const SceneBackground: React.FC = () => {
           ...noiseLayer2,
         }}
       />
+
+      {/* Logo at bottom right */}
+      <div style={styles.logoContainer}>
+        <Logo size={60} color="#000" />
+      </div>
     </AbsoluteFill>
   );
 };
@@ -90,5 +96,12 @@ const styles = {
     height: "200%",
     mixBlendMode: "screen" as const,
     filter: "contrast(1.5) brightness(1.2)",
+  },
+  logoContainer: {
+    position: "absolute" as const,
+    bottom: "40px",
+    right: "40px",
+    zIndex: 100,
+    opacity: 0.9,
   },
 };

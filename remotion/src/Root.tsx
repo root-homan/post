@@ -79,9 +79,9 @@ export const RemotionRoot: React.FC = () => {
       />
 
       <Composition
-        id="AnimatedLogoPreview"
+        id="ClosingScene"
         component={AnimatedLogoPreview}
-        durationInFrames={90}
+        durationInFrames={180}
         fps={30}
         width={2880}
         height={2160}

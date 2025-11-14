@@ -3,7 +3,11 @@ import { AbsoluteFill, useCurrentFrame, useVideoConfig } from "remotion";
 
 import { SceneWrapper } from "./components/SceneWrapper";
 import { FocusOverlay, Region } from "./focus";
-import { TokenScene } from "./TokenScene";
+import {
+  TokenScene,
+  TOKEN_EXPAND_DELAY_FRAMES,
+  TOKEN_EXPAND_DURATION_FRAMES,
+} from "./TokenScene";
 import { CompanySceneInput, Segment, TokenSceneInput } from "./types";
 
 export const CompanyScene: React.FC<CompanySceneInput> = ({
@@ -86,12 +90,7 @@ const CARD_HORIZONTAL_INSET_RATIO =
 const HOLDERS_TOP_RATIO = 0.38;
 const HOLDERS_HEIGHT_RATIO = 0.48;
 
-const TOKEN_APPEAR_DELAY_FRAMES = 12;
-const TOKEN_APPEAR_DURATION_FRAMES = 45;
-const TOKEN_EXPAND_DELAY_FRAMES =
-  TOKEN_APPEAR_DELAY_FRAMES + TOKEN_APPEAR_DURATION_FRAMES + 12;
-const TOKEN_EXPAND_DURATION_FRAMES = 48;
-const HOLDERS_FOCUS_BUFFER_FRAMES = 6;
+const HOLDERS_FOCUS_BUFFER_FRAMES = 0;
 const HOLDERS_FOCUS_START_FRAME =
   TOKEN_EXPAND_DELAY_FRAMES +
   TOKEN_EXPAND_DURATION_FRAMES +
