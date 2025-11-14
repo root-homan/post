@@ -3,11 +3,13 @@ import { CaptionScene } from "./CaptionScene";
 import { CaptionScenePreview } from "./CaptionScenePreview";
 import { PREVIEW_DATA } from "./PreviewData";
 import { CompanyScene } from "./token/CompanyScene";
+import { LogoScene } from "./token/LogoScene";
 import { TokenScene } from "./token/TokenScene";
 import {
   COMPANY_SCENE_PREVIEW_PROPS,
   TOKEN_SCENE_PREVIEW_PROPS,
 } from "./token/previewData";
+import { AnimatedLogoPreview } from "./token/components/Logo";
 
 export const RemotionRoot: React.FC = () => {
   return (
@@ -65,6 +67,24 @@ export const RemotionRoot: React.FC = () => {
         width={2880}
         height={2160}
         defaultProps={COMPANY_SCENE_PREVIEW_PROPS}
+      />
+
+      <Composition
+        id="LogoScene"
+        component={LogoScene}
+        durationInFrames={90}
+        fps={30}
+        width={2880}
+        height={2160}
+      />
+
+      <Composition
+        id="AnimatedLogoPreview"
+        component={AnimatedLogoPreview}
+        durationInFrames={90}
+        fps={30}
+        width={2880}
+        height={2160}
       />
     </>
   );
