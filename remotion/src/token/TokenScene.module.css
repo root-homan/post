@@ -1,0 +1,5 @@
+.root {
+  --token-scene-background: linear-gradient(135deg, #fdfdfd 0%, #f3f4f7 100%);
+  --token-scene-padding: 160px;
+  --token-scene-focus-dim: rgba(15, 18, 24, 0.4);
+}
