@@ -69,7 +69,7 @@ export const TOKEN_SCENE_PREVIEW_PROPS: TokenSceneInput = {
 export const COMPANY_SCENE_PREVIEW_PROPS: CompanySceneInput = {
   token: {
     id: "acme-company-token",
-    valuation: 420_000_000,
+    valuation: 42_000_000,
     owner: {
       name: "Acme",
       bio: "Acme is deploying autonomous build crews to deliver high-quality, affordable homes at scale.",
@@ -103,7 +103,7 @@ export const COMPANY_SCENE_PREVIEW_PROPS: CompanySceneInput = {
         entity: {
           name: "Aurora Forge",
           profileSrc:
-            "https://images.unsplash.com/photo-1521572163474-6864f9cf17ab?auto=format&fit=crop&w=400&q=80",
+            "https://images.unsplash.com/photo-1544005313-94ddf0286df2?auto=format&fit=crop&w=400&q=80",
         },
         percentageEquity: 15,
       },
