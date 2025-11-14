@@ -191,11 +191,22 @@ const createNoteStyles = (region: Region, intensity: number) => {
     top: top,
     transform: `translateY(-50%) translateX(${(1 - intensity) * -20}px)`,
     opacity: intensity,
-    color: "white",
-    fontSize: 60,
+    color: "#101019", // black text
+    fontSize: 48,
+    background:
+      "radial-gradient(ellipse 150% 150% at 50% 50%, rgba(255,255,255,0.85) 0%, rgba(255,255,255,0.45) 35%, rgba(255,255,255,0.15) 70%, rgba(255,255,255,0.05) 100%)", // larger spotlight-like glow
+    backdropFilter: "blur(20px) saturate(200%)",
+    WebkitBackdropFilter: "blur(20px) saturate(200%)",
+    border: "1.5px solid rgba(255,255,255,0.45)", // brighter border to match spotlight
+    boxShadow:
+      "0 0 80px rgba(255,255,255,0.35), 0 0 120px rgba(255,255,255,0.2), 0 2px 16px 0 rgba(200,200,220,0.10)", // larger glow shadow
+    padding: 24,
+    borderRadius: 24,
     fontFamily: "inter, sans-serif",
     fontWeight: 420,
     pointerEvents: "none" as const,
     whiteSpace: "nowrap" as const,
+    mixBlendMode: "screen" as const,
+    filter: "blur(0.5px)",
   };
 };

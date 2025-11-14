@@ -1,6 +1,7 @@
 import React, { useMemo } from "react";
 import { AbsoluteFill, useCurrentFrame, useVideoConfig } from "remotion";
 
+import { SceneWrapper } from "./components/SceneWrapper";
 import { FocusOverlay, Region } from "./focus";
 import { TokenScene } from "./TokenScene";
 import { CompanySceneInput, Segment, TokenSceneInput } from "./types";
@@ -30,16 +31,18 @@ export const CompanyScene: React.FC<CompanySceneInput> = ({
   const focusRegions: Region[] = shouldHighlightHolders ? [holdersRegion] : [];
 
   return (
-    <AbsoluteFill style={companySceneStyles.stage}>
-      <TokenScene {...tokenSceneProps} />
-      <FocusOverlay
-        regions={focusRegions}
-        startFrame={HOLDERS_FOCUS_START_FRAME}
-        duration={24}
-        dimOpacity={0.25}
-        spotlightRadius={40}
-      />
-    </AbsoluteFill>
+    <SceneWrapper>
+      <AbsoluteFill style={companySceneStyles.stage}>
+        <TokenScene {...tokenSceneProps} />
+        <FocusOverlay
+          regions={focusRegions}
+          startFrame={HOLDERS_FOCUS_START_FRAME}
+          duration={24}
+          dimOpacity={0.25}
+          spotlightRadius={40}
+        />
+      </AbsoluteFill>
+    </SceneWrapper>
   );
 };
 

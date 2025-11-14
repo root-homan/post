@@ -1,0 +1,2 @@
+export { SceneBackground } from "./SceneBackground";
+
