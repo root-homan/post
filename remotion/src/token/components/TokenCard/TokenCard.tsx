@@ -36,9 +36,9 @@ export const TokenCard: React.FC<TokenCardProps> = ({
   return (
     <div
       className={tokenCardStyles.root}
-      style={createContainerStyle(visibleProgress)}
+      style={createContainerStyle(visibleProgress, drawerProgress)}
     >
-      <div aria-hidden style={createGlowStyles(glow)} />
+      <div aria-hidden style={createGlowStyles(glow, drawerProgress)} />
 
       <div style={createUserGroupStyles(drawerProgress)}>
         <TokenHeader owner={token.owner} valuation={token.valuation} />
@@ -68,12 +68,13 @@ export const TokenCard: React.FC<TokenCardProps> = ({
   );
 };
 
-const createContainerStyle = (progress: number) => ({
+const createContainerStyle = (visible: number, expansion: number) => ({
   ...tokenCardStylesMap.container,
-  opacity: progress,
+  opacity: visible,
+  borderRadius: getAnimatedRadius(expansion),
 });
 
-const createGlowStyles = (progress: number) => {
+const createGlowStyles = (progress: number, expansion: number) => {
   if (progress <= 0) {
     return {
       opacity: 0,
@@ -86,15 +87,16 @@ const createGlowStyles = (progress: number) => {
   const highlightStart = `${startAngle.toFixed(2)}deg`;
   const highlightMid = `${(startAngle + sweep * 0.5).toFixed(2)}deg`;
   const highlightEnd = `${(startAngle + sweep).toFixed(2)}deg`;
+  const blurScale = 1 + (1 - expansion) * 0.35;
   const mask =
-    "radial-gradient(circle, transparent calc(100% - 4px), #000 100%)";
+    "radial-gradient(circle, transparent calc(100% - 3px), #000 100%)";
 
   return {
     position: "absolute" as const,
     inset: 0,
-    borderRadius: "var(--token-card-border-radius)",
+    borderRadius: getAnimatedRadius(expansion),
     pointerEvents: "none" as const,
-    zIndex: 0,
+    zIndex: 2,
     opacity: Math.min(1, progress * 1.2),
     background: `conic-gradient(
       from -135deg,
@@ -105,15 +107,22 @@ const createGlowStyles = (progress: number) => {
       transparent ${highlightEnd},
       transparent 360deg
     )`,
-    filter: "blur(var(--token-card-glow-blur))",
-    mask,
-    WebkitMask: mask,
+    filter: `blur(calc(var(--token-card-glow-blur) * ${blurScale.toFixed(2)}))`,
+    mixBlendMode: "screen" as const,
+    maskImage: mask,
+    WebkitMaskImage: mask,
+    maskMode: "alpha",
+    WebkitMaskRepeat: "no-repeat",
+    maskRepeat: "no-repeat" as const,
   };
 };
 
 const createUserGroupStyles = (progress: number) => ({
   ...tokenCardStylesMap.userGroup,
-  gap: `calc(var(--token-card-inner-gap) * ${0.35 + 0.65 * progress})`,
+  gap: `calc(var(--token-card-inner-gap) * ${formatScale(progress)})`,
+  justifyContent: progress < 0.05 ? "center" : "flex-start",
+  borderRadius: getAnimatedRadius(progress),
+  padding: getAnimatedPadding(progress),
 });
 
 const createBioWrapperStyles = (progress: number) => ({
@@ -144,6 +153,18 @@ const createDrawerContentStyles = (progress: number) => {
     pointerEvents: pointerState,
   };
 };
+
+const getAnimatedRadius = (progress: number) => {
+  const scale = 1 + (1 - progress);
+  return `calc(var(--token-card-border-radius) * ${formatScale(scale)})`;
+};
+
+const getAnimatedPadding = (progress: number) => {
+  const scale = 0.5 + 0.5 * progress;
+  return `calc(var(--token-card-padding) * ${formatScale(scale)})`;
+};
+
+const formatScale = (value: number) => value.toFixed(3).replace(/\.?0+$/, "");
 
 const tokenCardStylesMap = {
   container: {
