@@ -1,7 +1,7 @@
 import React from "react";
 import { AbsoluteFill } from "remotion";
 
-import { useSpringProgress } from "./animation/primitives";
+import { useEaseProgress } from "./animation/primitives";
 import { TokenCard } from "./components/TokenCard/TokenCard";
 import tokenSceneStyles from "./TokenScene.module.css";
 import { TOKEN_SCENE_PREVIEW_PROPS } from "./previewData";
@@ -12,18 +12,19 @@ export const TokenScene: React.FC<TokenSceneInput> = ({
   currentSegment,
   defaultSegment,
   isExpanded,
+  showSegmentControl = true,
 }) => {
   const effectiveToken = resolveToken(token);
   const activeSegment = resolveSegment(currentSegment, defaultSegment);
 
-  const tokenAppearanceProgress = useSpringProgress({
+  const tokenAppearanceProgress = useEaseProgress({
     delayFrames: TOKEN_APPEAR_DELAY_FRAMES,
     durationInFrames: TOKEN_APPEAR_DURATION_FRAMES,
     to: effectiveToken ? 1 : 0,
     disabled: !effectiveToken,
   });
 
-  const expansionProgress = useSpringProgress({
+  const expansionProgress = useEaseProgress({
     delayFrames: TOKEN_EXPAND_DELAY_FRAMES,
     durationInFrames: TOKEN_EXPAND_DURATION_FRAMES,
     to: isExpanded ? 1 : 0,
@@ -55,6 +56,7 @@ export const TokenScene: React.FC<TokenSceneInput> = ({
             appearanceProgress={tokenAppearanceProgress}
             glowProgress={tokenAppearanceProgress}
             expansionProgress={expansionProgress}
+            showSegmentControl={showSegmentControl}
           />
         ) : null}
       </div>

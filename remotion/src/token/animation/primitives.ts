@@ -1,4 +1,11 @@
-import { spring, SpringConfig, useCurrentFrame, useVideoConfig } from "remotion";
+import {
+  Easing,
+  interpolate,
+  spring,
+  SpringConfig,
+  useCurrentFrame,
+  useVideoConfig,
+} from "remotion";
 
 /**
  * A tuned spring inspired by iOS' default motion curves.
@@ -7,9 +14,9 @@ import { spring, SpringConfig, useCurrentFrame, useVideoConfig } from "remotion"
  * Tweak these numbers to globally change how "bouncy" the UI feels.
  */
 export const IOS_SPRING_CONFIG: SpringConfig = {
-  damping: 200,
-  stiffness: 170,
-  mass: 0.9,
+  damping: 280,
+  stiffness: 160,
+  mass: 1.05,
 };
 
 export interface SpringProgressOptions {
@@ -79,5 +86,41 @@ export const clampProgress = (value: number, min = 0, max = 1) => {
   }
 
   return Math.min(max, Math.max(min, value));
+};
+
+export interface EaseProgressOptions {
+  delayFrames?: number;
+  durationInFrames?: number;
+  from?: number;
+  to?: number;
+  easing?: (t: number) => number;
+  disabled?: boolean;
+}
+
+const DEFAULT_EASING = Easing.bezier(0.33, 0, 0.2, 1);
+
+export const useEaseProgress = ({
+  delayFrames = 0,
+  durationInFrames = 45,
+  from = 0,
+  to = 1,
+  easing = DEFAULT_EASING,
+  disabled = false,
+}: EaseProgressOptions = {}) => {
+  if (disabled) {
+    return to;
+  }
+
+  const frame = useCurrentFrame();
+  const elapsed = Math.max(0, frame - delayFrames);
+  const normalized = durationInFrames
+    ? Math.min(1, elapsed / durationInFrames)
+    : 1;
+  const eased = easing(normalized);
+
+  return interpolate(eased, [0, 1], [from, to], {
+    extrapolateLeft: "clamp",
+    extrapolateRight: "clamp",
+  });
 };
 

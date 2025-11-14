@@ -63,4 +63,15 @@ export interface TokenSceneInput {
   annotations?: Annotation[];
   lightFocus?: LightFocus;
   cameraFocus?: CameraFocus;
+  showSegmentControl?: boolean;
+}
+
+export interface CompanySceneInput
+  extends Omit<
+    TokenSceneInput,
+    "currentSegment" | "defaultSegment" | "showSegmentControl"
+  > {
+  currentSegment?: Segment;
+  defaultSegment?: Segment;
+  showSegmentControl?: boolean;
 }

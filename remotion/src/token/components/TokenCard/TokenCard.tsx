@@ -15,6 +15,7 @@ interface TokenCardProps {
   appearanceProgress: number;
   glowProgress: number;
   expansionProgress: number;
+  showSegmentControl?: boolean;
 }
 
 const BIO_MAX_HEIGHT = 420;
@@ -27,11 +28,13 @@ export const TokenCard: React.FC<TokenCardProps> = ({
   appearanceProgress,
   glowProgress,
   expansionProgress,
+  showSegmentControl = true,
 }) => {
   const visibleProgress = clampProgress(appearanceProgress);
   const glow = clampProgress(glowProgress);
   const drawerProgress = isExpanded ? clampProgress(expansionProgress) : 0;
-  const bioProgress = token.owner.bio ? drawerProgress : 0;
+  const heroProgress = getHeroProgress(drawerProgress);
+  const bioProgress = token.owner.bio ? heroProgress : 0;
 
   return (
     <div
@@ -40,7 +43,7 @@ export const TokenCard: React.FC<TokenCardProps> = ({
     >
       <div aria-hidden style={createGlowStyles(glow, drawerProgress)} />
 
-      <div style={createUserGroupStyles(drawerProgress)}>
+      <div style={createUserGroupStyles(heroProgress)}>
         <TokenHeader owner={token.owner} valuation={token.valuation} />
 
         {token.owner.bio ? (
@@ -54,9 +57,11 @@ export const TokenCard: React.FC<TokenCardProps> = ({
 
       <div style={createDrawerWrapperStyles(drawerProgress)}>
         <div style={createDrawerContentStyles(drawerProgress)}>
-          <div style={tokenCardStylesMap.segmentControlWrapper}>
-            <SegmentControl currentSegment={segment} />
-          </div>
+          {showSegmentControl ? (
+            <div style={tokenCardStylesMap.segmentControlWrapper}>
+              <SegmentControl currentSegment={segment} />
+            </div>
+          ) : null}
           <HolderList
             holders={token.holders}
             holdings={token.holdings}
@@ -72,6 +77,7 @@ const createContainerStyle = (visible: number, expansion: number) => ({
   ...tokenCardStylesMap.container,
   opacity: visible,
   borderRadius: getAnimatedRadius(expansion),
+  width: getAnimatedWidth(expansion),
 });
 
 const createGlowStyles = (progress: number, expansion: number) => {
@@ -168,7 +174,6 @@ const formatScale = (value: number) => value.toFixed(3).replace(/\.?0+$/, "");
 
 const tokenCardStylesMap = {
   container: {
-    width: "var(--token-card-width)",
     borderRadius: "var(--token-card-border-radius)",
     background: "var(--token-card-surface-base)",
     border: "var(--token-card-border)",
@@ -208,4 +213,24 @@ const tokenCardStylesMap = {
     alignSelf: "flex-start" as const,
     width: "max-content",
   },
+};
+
+const getAnimatedWidth = (progress: number) => {
+  const widthProgress = Math.min(
+    progress / WIDTH_EXPANSION_COMPLETION_POINT,
+    1
+  );
+  const scale = 1 + 0.25 * widthProgress;
+  return `calc(var(--token-card-width) * ${formatScale(scale)})`;
+};
+
+const WIDTH_EXPANSION_COMPLETION_POINT = 0.5;
+const HERO_COMPLETION_POINT = 0.5;
+
+const getHeroProgress = (progress: number) => {
+  if (progress <= 0) {
+    return 0;
+  }
+
+  return clampProgress(progress / HERO_COMPLETION_POINT);
 };

@@ -21,7 +21,13 @@ export const Avatar: React.FC<AvatarProps> = ({
   variant = "header",
 }) => {
   const initials = getInitials(name);
-  const containerStyle = createContainerStyle(size, borderWidth, borderColor, variant);
+  const containerStyle = createContainerStyle(
+    size,
+    borderWidth,
+    borderColor,
+    variant
+  );
+  const fallbackStyle = createFallbackStyle(size, variant);
 
   return (
     <div className={avatarStyles.root} style={containerStyle}>
@@ -33,7 +39,7 @@ export const Avatar: React.FC<AvatarProps> = ({
           loading="lazy"
         />
       ) : (
-        <div style={baseStyles.fallback}>
+        <div style={fallbackStyle}>
           <span>{initials}</span>
         </div>
       )}
@@ -47,17 +53,7 @@ const baseStyles = {
     height: "100%",
     objectFit: "cover" as const,
     display: "block",
-  },
-  fallback: {
-    width: "100%",
-    height: "100%",
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "center",
-    fontFamily: "Sohne, Inter, -apple-system, BlinkMacSystemFont, sans-serif",
-    fontWeight: "var(--avatar-fallback-font-weight)",
-    color: "var(--avatar-fallback-color)",
-    background: "var(--avatar-fallback-background)",
+    filter: "grayscale(1) contrast(1.05)",
   },
 };
 
@@ -83,5 +79,41 @@ const createContainerStyle = (
     border: borderWidth 
       ? `${borderWidth}px solid ${borderColor ?? "var(--avatar-border-color)"}` 
       : `calc(${sizeVar} / var(--avatar-border-width-ratio)) solid ${borderColor ?? "var(--avatar-border-color)"}`,
+  };
+};
+
+const createFallbackStyle = (
+  size?: number,
+  variant: "header" | "list" = "header"
+) => {
+  const sizeVar =
+    variant === "header"
+      ? "var(--avatar-size-header)"
+      : "var(--avatar-size-list)";
+  const fontSize =
+    typeof size === "number"
+      ? `${(size * 0.56).toFixed(2)}px`
+      : `calc(${sizeVar} * 0.56)`;
+  const paddingValue =
+    typeof size === "number"
+      ? `${Math.max(2, size * 0.08).toFixed(2)}px`
+      : `calc(${sizeVar} * 0.08)`;
+
+  return {
+    width: "100%",
+    height: "100%",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    fontFamily: "Sohne, Inter, -apple-system, BlinkMacSystemFont, sans-serif",
+    fontWeight: 500,
+    color: "#fff",
+    background: "#000",
+    fontSize,
+    lineHeight: 1,
+    letterSpacing: "-0.04em",
+    textTransform: "uppercase" as const,
+    paddingBottom: paddingValue,
+    paddingTop: paddingValue,
   };
 };
