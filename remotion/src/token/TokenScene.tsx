@@ -1,28 +1,36 @@
 import React from "react";
 import { AbsoluteFill } from "remotion";
 
+import { useSpringProgress } from "./animation/primitives";
 import { TokenCard } from "./components/TokenCard/TokenCard";
 import tokenSceneStyles from "./TokenScene.module.css";
 import { TOKEN_SCENE_PREVIEW_PROPS } from "./previewData";
-import {
-  Segment,
-  Token,
-  TokenComponent,
-  TokenSceneInput,
-} from "./types";
+import { Segment, Token, TokenSceneInput } from "./types";
 
 export const TokenScene: React.FC<TokenSceneInput> = ({
   token,
   currentSegment,
   defaultSegment,
   isExpanded,
-  annotations,
-  lightFocus,
-  cameraFocus,
 }) => {
   const effectiveToken = resolveToken(token);
   const activeSegment = resolveSegment(currentSegment, defaultSegment);
-  const focusTargets = resolveLightFocus(lightFocus);
+
+  const tokenAppearanceProgress = useSpringProgress({
+    delayFrames: TOKEN_APPEAR_DELAY_FRAMES,
+    durationInFrames: TOKEN_APPEAR_DURATION_FRAMES,
+    to: effectiveToken ? 1 : 0,
+    disabled: !effectiveToken,
+  });
+
+  const expansionProgress = useSpringProgress({
+    delayFrames: TOKEN_EXPAND_DELAY_FRAMES,
+    durationInFrames: TOKEN_EXPAND_DURATION_FRAMES,
+    to: isExpanded ? 1 : 0,
+  });
+
+  const displayedToken =
+    tokenAppearanceProgress > 0.001 && effectiveToken ? effectiveToken : null;
 
   if (!effectiveToken) {
     return (
@@ -39,14 +47,16 @@ export const TokenScene: React.FC<TokenSceneInput> = ({
       style={sceneStyles.container}
     >
       <div style={sceneStyles.content}>
-        <TokenCard
-          token={effectiveToken}
-          segment={activeSegment}
-          isExpanded={isExpanded}
-          annotations={annotations}
-          lightFocus={focusTargets}
-          cameraFocus={cameraFocus}
-        />
+        {displayedToken ? (
+          <TokenCard
+            token={displayedToken}
+            segment={activeSegment}
+            isExpanded={isExpanded}
+            appearanceProgress={tokenAppearanceProgress}
+            glowProgress={tokenAppearanceProgress}
+            expansionProgress={expansionProgress}
+          />
+        ) : null}
       </div>
     </AbsoluteFill>
   );
@@ -86,6 +96,8 @@ const resolveSegment = (
   return currentSegment ?? defaultSegment;
 };
 
-const resolveLightFocus = (lightFocus?: TokenComponent[]) => {
-  return lightFocus ?? [];
-};
+const TOKEN_APPEAR_DELAY_FRAMES = 12;
+const TOKEN_APPEAR_DURATION_FRAMES = 45;
+const TOKEN_EXPAND_DELAY_FRAMES =
+  TOKEN_APPEAR_DELAY_FRAMES + TOKEN_APPEAR_DURATION_FRAMES + 12;
+const TOKEN_EXPAND_DURATION_FRAMES = 48;
