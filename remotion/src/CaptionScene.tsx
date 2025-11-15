@@ -1,11 +1,5 @@
 import React from "react";
-import {
-  AbsoluteFill,
-  Easing,
-  interpolate,
-  useCurrentFrame,
-  useVideoConfig,
-} from "remotion";
+import { AbsoluteFill, useCurrentFrame, useVideoConfig } from "remotion";
 import { CaptionData, Word as WordType } from "./types";
 import { Word } from "./Word";
 
@@ -13,8 +7,6 @@ interface CaptionSceneProps {
   inputProps: CaptionData;
 }
 
-const DROP_DISTANCE = 6; // pixels
-const ANIMATION_DURATION_MS = 400;
 const MIN_WORD_DURATION_FOR_KARAOKE_MS = 500; // Lower threshold - more lines get karaoke
 
 export const CaptionScene: React.FC<CaptionSceneProps> = ({ inputProps }) => {
@@ -66,27 +58,8 @@ export const CaptionScene: React.FC<CaptionSceneProps> = ({ inputProps }) => {
           return null;
         }
 
-        // Calculate drop animation (only if effects are enabled)
-        let currentY = baselineY;
-        if (enableEffects) {
-          const animationDurationFrames = Math.floor(
-            (ANIMATION_DURATION_MS / 1000) * fps
-          );
-          const animationProgress = Math.min(
-            1,
-            (frame - startFrame) / animationDurationFrames
-          );
-
-          currentY = interpolate(
-            animationProgress,
-            [0, 1],
-            [baselineY - DROP_DISTANCE, baselineY],
-            {
-              extrapolateRight: "clamp",
-              easing: Easing.out(Easing.cubic), // Fast start, smooth ease into final position
-            }
-          );
-        }
+        // No drop animation - captions stay at baseline position
+        const currentY = baselineY;
 
         // Calculate word positions (0 = leftmost, 1 = rightmost)
         // We'll use a simple approach: divide the line into equal segments
@@ -134,11 +107,25 @@ const styles = {
     left: "50%",
     transform: "translateX(-50%)",
     fontFamily: "Inter, -apple-system, BlinkMacSystemFont, sans-serif",
-    fontWeight: 460,
-    fontSize: "96px",
-    color: "white",
+    fontWeight: 440,
+    fontSize: "100px",
+    color: "#000000",
     textAlign: "center" as const,
     whiteSpace: "nowrap" as const,
     letterSpacing: "-0.01em",
+    backgroundColor: "rgba(255, 255, 255, 0.95)",
+    backdropFilter: "blur(20px) saturate(180%) contrast(110%)",
+    WebkitBackdropFilter: "blur(20px) saturate(180%) contrast(110%)",
+    border: "1px solid rgba(255, 255, 255, 0.7)",
+    padding: "40px 96px",
+    borderRadius: "0px",
+    boxShadow:
+      "inset 0 1px 2px rgba(255, 255, 255, 0.5), inset 0 -1px 2px rgba(0, 0, 0, 0.02)",
+    maskImage:
+      "linear-gradient(to right, transparent 0%, black 3%, black 97%, transparent 100%), linear-gradient(to bottom, transparent 0%, black 8%, black 92%, transparent 100%)",
+    WebkitMaskImage:
+      "linear-gradient(to right, transparent 0%, black 3%, black 97%, transparent 100%), linear-gradient(to bottom, transparent 0%, black 8%, black 92%, transparent 100%)",
+    maskComposite: "intersect",
+    WebkitMaskComposite: "source-in",
   },
 };

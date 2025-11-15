@@ -1,10 +1,11 @@
 import React from "react";
 
-import { Segment } from "../../types";
+import { Segment, SegmentAnimation } from "../../types";
 import segmentControlStyles from "./SegmentControl.module.css";
 
 interface SegmentControlProps {
   currentSegment: Segment;
+  segmentAnimation?: SegmentAnimation;
   onChange?: (segment: Segment) => void;
 }
 
@@ -15,8 +16,12 @@ const SEGMENT_OPTIONS: Array<{ label: string; value: Segment }> = [
 
 export const SegmentControl: React.FC<SegmentControlProps> = ({
   currentSegment,
+  segmentAnimation,
   onChange,
 }) => {
+  // Determine the effective segment to show based on animation progress
+  const displaySegment = getDisplaySegment(currentSegment, segmentAnimation);
+
   return (
     <div
       className={segmentControlStyles.root}
@@ -25,7 +30,7 @@ export const SegmentControl: React.FC<SegmentControlProps> = ({
       aria-label="Token segment control"
     >
       {SEGMENT_OPTIONS.map((option) => {
-        const isActive = option.value === currentSegment;
+        const isActive = option.value === displaySegment;
         const optionStyle = {
           ...segmentStyles.optionBase,
           ...segmentStyles.getOptionStyle(isActive),
@@ -52,6 +57,18 @@ export const SegmentControl: React.FC<SegmentControlProps> = ({
       })}
     </div>
   );
+};
+
+const getDisplaySegment = (
+  currentSegment: Segment,
+  animation?: SegmentAnimation
+): Segment => {
+  if (!animation) {
+    return currentSegment;
+  }
+
+  // Switch at 50% progress for a synchronized transition
+  return animation.progress < 0.5 ? animation.from : animation.to;
 };
 
 const segmentStyles = {

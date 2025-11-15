@@ -76,19 +76,60 @@ post -tighten --dir /path/to/video/directory
 
 ### Transcribe
 
-Generate word-level timestamps:
+Generate word-level timestamps with Whisper:
 
 ```bash
+# Transcribe a specific video file
+post -transcribe video.mp4
+
+# Choose a different model (default: medium)
+post -transcribe video.mp4 --model large-v3
+
+# Auto-detect video in directory (if only one video exists)
 post -transcribe --dir /path/to/video/directory
 ```
 
+**Output:** Creates `video.json` (word timestamps) and `video.srt` (subtitles)
+
 ### Add Captions
 
-Add animated captions to video:
+Render animated captions with drop + karaoke effects:
 
 ```bash
+# Render captions for a specific video file
+post -captions video-draft.mp4
+
+# Auto-detect *-draft.mp4 files in directory
 post -captions --dir /path/to/video/directory
 ```
+
+**Output:** 
+- Creates `video-draft-captions.mov` (transparent background, ready for FCP)
+- Creates `video-draft-grouping.json` (word groupings, human-editable)
+
+**Prerequisites:** 
+- Requires `video-draft.json` (word-level timestamps from `-transcribe`)
+- If transcript is missing, run `post -transcribe` first
+
+**Note:** The output is a standalone caption file with transparent background. Composite it onto your video in Final Cut Pro or other editors.
+
+**Workflow:**
+1. First run generates groupings using GPT-5-mini → saves to `video-draft-grouping.json`
+2. Edit the grouping JSON to manually adjust word groupings if needed
+3. Re-run to render with new groupings (no GPT call needed)
+
+**Example grouping file:**
+```json
+{
+  "groups": [
+    {"indices": [0, 1], "text": "Hello everyone"},
+    {"indices": [2, 3, 4, 5], "text": "today we're talking about"},
+    {"indices": [6], "text": "AI"}
+  ]
+}
+```
+
+The `indices` field references word positions from the transcript, and `text` is for human readability.
 
 ### Full Pipeline
 

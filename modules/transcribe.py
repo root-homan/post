@@ -11,21 +11,30 @@ except ImportError:
 
 def run(args):
     """
+    Generate word-level timestamps from a video using stable-ts.
+    
     Dependencies:
-        - Requires one video file (*.mp4, *.mov, *.avi, etc.) in the working directory.
+        - Requires a video file (*.mp4, *.mov, *.avi, etc.) as argument or in the working directory
         - Requires stable-ts to be installed: `pip install stable-ts`
-        - Requires ffmpeg for audio extraction.
+        - Requires ffmpeg for audio extraction
+    
     Failure behaviour:
-        - Aborts when no video is found or when multiple video candidates are present.
-        - Prompts before overwriting an existing JSON/SRT file unless `--yes` is supplied.
+        - Aborts when no video is found or when multiple video candidates are present (unless video file is specified)
+        - Prompts before overwriting an existing JSON/SRT file unless `--yes` is supplied
+    
     Output:
-        - Produces `<video_basename>.json`, containing word-level timestamps.
-        - Produces `<video_basename>.srt`, containing segment-level subtitles with timecodes.
+        - Produces `<video_basename>.json`, containing word-level timestamps
+        - Produces `<video_basename>.srt`, containing segment-level subtitles with timecodes
         - JSON format: [{"word": "text", "start": 0.0, "end": 0.5}, ...]
     """
     parser = build_cli_parser(
         stage="transcribe",
         summary="Generate word-level timestamps from a video using stable-ts.",
+    )
+    parser.add_argument(
+        "video_file",
+        nargs="?",
+        help="Video file to transcribe (if not provided, searches working directory)",
     )
     parser.add_argument(
         "--model",
@@ -48,40 +57,38 @@ def run(args):
 
     _ensure_tool("ffmpeg")
 
-    # Find any video file in the directory
-    video_extensions = ["*.mp4", "*.mov", "*.avi", "*.mkv", "*.webm", "*.m4v"]
-    video_files = []
-    for ext in video_extensions:
-        video_files.extend(env.directory.glob(ext))
-    video_files = [path for path in video_files if path.is_file()]
+    # Find the video file
+    if parsed.video_file:
+        # Use the specified file (positional argument)
+        video_file = Path(parsed.video_file)
+        if not video_file.exists():
+            env.abort(f"Specified video file not found: '{video_file}'")
+        if not video_file.is_file():
+            env.abort(f"Specified path is not a file: '{video_file}'")
+    else:
+        # Search for video files in the directory
+        video_extensions = ["*.mp4", "*.mov", "*.avi", "*.mkv", "*.webm", "*.m4v"]
+        video_files = []
+        for ext in video_extensions:
+            video_files.extend(env.directory.glob(ext))
+        video_files = [path for path in video_files if path.is_file()]
 
-    if not video_files:
-        env.abort(
-            f"Expected a video file in '{env.directory}', but nothing was found. "
-            f"Supported formats: {', '.join(video_extensions)}"
-        )
+        if not video_files:
+            env.abort(
+                f"Expected a video file in '{env.directory}', but nothing was found. "
+                f"Supported formats: {', '.join(video_extensions)}\n"
+                f"Tip: Specify a video file directly: post -transcribe video.mp4"
+            )
 
-    # If multiple videos exist, look for a single "-tight" video
-    if len(video_files) > 1:
-        tight_videos = [v for v in video_files if "-tight" in v.stem]
-        
-        if not tight_videos:
+        if len(video_files) > 1:
             names = ", ".join(path.name for path in sorted(video_files))
             env.abort(
-                f"Found multiple video files ({names}) but none contain '-tight' in the filename. "
-                "Please ensure only one video exists, or have a single '-tight' video."
+                f"Found multiple video files: {names}\n"
+                f"Please specify which video to transcribe: post -transcribe <filename>"
             )
         
-        if len(tight_videos) > 1:
-            names = ", ".join(path.name for path in sorted(tight_videos))
-            env.abort(
-                f"Found multiple '-tight' video files: {names}. "
-                "Please ensure only one '-tight' video exists."
-            )
-        
-        video_file = tight_videos[0]
-    else:
         video_file = video_files[0]
+    
     json_file = video_file.with_suffix(".json")
     srt_file = video_file.with_suffix(".srt")
 

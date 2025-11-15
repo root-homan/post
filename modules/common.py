@@ -172,7 +172,7 @@ def find_preferred_rough_video(env: StageEnvironment) -> Path:
     raise AssertionError("unreachable")
 
 
-def call_gpt5(system_prompt: str, user_prompt: str, response_format=None, model: str = "gpt-5") -> str:
+def call_gpt5(system_prompt: str, user_prompt: str, response_format=None, model: str = "gpt-5", timeout: int = 120) -> str:
     """
     Common function to call GPT-5 API.
     
@@ -186,6 +186,8 @@ def call_gpt5(system_prompt: str, user_prompt: str, response_format=None, model:
         Optional response format specification (e.g., {"type": "json_object"}).
     model:
         The model to use (default: "gpt-5"). Can be "gpt-5-mini" for faster/cheaper responses.
+    timeout:
+        Request timeout in seconds (default: 120).
         
     Returns
     -------
@@ -203,7 +205,8 @@ def call_gpt5(system_prompt: str, user_prompt: str, response_format=None, model:
         raise SystemExit(1)
     
     try:
-        client = OpenAI(api_key=api_key)
+        print(f"🔄 Calling OpenAI API (model: {model}, timeout: {timeout}s)...")
+        client = OpenAI(api_key=api_key, timeout=timeout)
         kwargs = {
             "model": model,
             "messages": [
@@ -216,10 +219,29 @@ def call_gpt5(system_prompt: str, user_prompt: str, response_format=None, model:
             kwargs["response_format"] = response_format
         
         response = client.chat.completions.create(**kwargs)
-        return response.choices[0].message.content
+        content = response.choices[0].message.content
         
+        # Debug output
+        print(f"✅ API call successful")
+        print(f"📊 Response stats: {len(content)} characters, finish_reason: {response.choices[0].finish_reason}")
+        
+        # Show first 200 chars of response for debugging
+        preview = content[:200] + "..." if len(content) > 200 else content
+        print(f"📝 Response preview: {preview}")
+        
+        return content
+        
+    except TimeoutError as e:
+        print(f"❌ OpenAI API call timed out after {timeout}s")
+        print(f"   Error details: {e}")
+        raise SystemExit(1)
     except Exception as e:
-        print(f"❌ OpenAI API call failed: {e}")
+        print(f"❌ OpenAI API call failed")
+        print(f"   Error type: {type(e).__name__}")
+        print(f"   Error message: {e}")
+        import traceback
+        print(f"   Traceback:")
+        traceback.print_exc()
         raise SystemExit(1)
 
 

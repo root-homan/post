@@ -1,7 +1,7 @@
 import React, { CSSProperties } from "react";
 
 import { clampProgress } from "../../animation/primitives";
-import { Segment, Token } from "../../types";
+import { Segment, SegmentAnimation, Token } from "../../types";
 import { HolderList } from "../HolderList/HolderList";
 import { SegmentControl } from "../SegmentControl/SegmentControl";
 import { TokenBio } from "../TokenBio/TokenBio";
@@ -16,6 +16,7 @@ interface TokenCardProps {
   glowProgress: number;
   expansionProgress: number;
   showSegmentControl?: boolean;
+  segmentAnimation?: SegmentAnimation;
 }
 
 const BIO_MAX_HEIGHT = 420;
@@ -29,6 +30,7 @@ export const TokenCard: React.FC<TokenCardProps> = ({
   glowProgress,
   expansionProgress,
   showSegmentControl = true,
+  segmentAnimation,
 }) => {
   const visibleProgress = clampProgress(appearanceProgress);
   const glow = clampProgress(glowProgress);
@@ -59,13 +61,17 @@ export const TokenCard: React.FC<TokenCardProps> = ({
         <div style={createDrawerContentStyles(drawerProgress)}>
           {showSegmentControl ? (
             <div style={tokenCardStylesMap.segmentControlWrapper}>
-              <SegmentControl currentSegment={segment} />
+              <SegmentControl
+                currentSegment={segment}
+                segmentAnimation={segmentAnimation}
+              />
             </div>
           ) : null}
           <HolderList
             holders={token.holders}
             holdings={token.holdings}
             segment={segment}
+            segmentAnimation={segmentAnimation}
           />
         </div>
       </div>

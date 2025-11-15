@@ -1,27 +1,20 @@
 import {
   CameraPosition,
   CompanySceneInput,
+  PersonalTokenSceneInput,
   Segment,
   TokenSceneInput,
 } from "./types";
+import { ALICE_IDENTITY } from "./characters";
 
 export const TOKEN_SCENE_PREVIEW_PROPS: TokenSceneInput = {
   token: {
     id: "alice-token",
     valuation: 10_000_000,
-    owner: {
-      name: "Alice",
-      profileSrc:
-        "https://images.unsplash.com/photo-1494790108377-be9c29b29330?auto=format&fit=crop&w=400&q=80&sat=-100",
-      bio: "i <3 design, storytelling & exploring interesting ideas.",
-    },
+    owner: ALICE_IDENTITY,
     holders: [
       {
-        entity: {
-          name: "_self",
-          profileSrc:
-            "https://images.unsplash.com/photo-1494790108377-be9c29b29330?auto=format&fit=crop&w=400&q=80&sat=-100",
-        },
+        entity: ALICE_IDENTITY,
         percentageEquity: 99,
       },
       {
@@ -41,7 +34,7 @@ export const TOKEN_SCENE_PREVIEW_PROPS: TokenSceneInput = {
             "https://images.unsplash.com/photo-1438761681033-6461ffad8d80?auto=format&fit=crop&w=400&q=80&sat=-100",
         },
         percentageEquity: 35,
-        valuation: 3_500_000,
+        companyValuation: 10_000_000,
       },
       {
         entity: {
@@ -50,7 +43,7 @@ export const TOKEN_SCENE_PREVIEW_PROPS: TokenSceneInput = {
             "https://images.unsplash.com/photo-1500648767791-00dcc994a43e?auto=format&fit=crop&w=400&q=80&sat=-100",
         },
         percentageEquity: 15,
-        valuation: 1_500_000,
+        companyValuation: 5_000_000,
       },
     ],
   },
@@ -127,4 +120,82 @@ export const COMPANY_SCENE_PREVIEW_PROPS: CompanySceneInput = {
   ],
   lightFocus: [],
   cameraFocus: CameraPosition.Normal,
+};
+
+export const PERSONAL_TOKEN_SCENE_PROPS: PersonalTokenSceneInput = {
+  token: {
+    id: "alice-personal-token",
+    valuation: 100_000_000,
+    owner: ALICE_IDENTITY,
+    holders: [
+      {
+        entity: {
+          ...ALICE_IDENTITY,
+          name: "Alice (self)",
+        },
+        percentageEquity: 93,
+      },
+      {
+        entity: {
+          name: "Maya",
+          profileSrc:
+            "https://images.unsplash.com/photo-1544723795-3fb6469f5b39?auto=format&fit=crop&w=400&q=80",
+        },
+        percentageEquity: 4,
+      },
+      {
+        entity: {
+          name: "Dan",
+          profileSrc:
+            "https://images.unsplash.com/photo-1500648767791-00dcc994a43e?auto=format&fit=crop&w=400&q=80",
+        },
+        percentageEquity: 2,
+      },
+      {
+        entity: {
+          name: "Bob",
+          profileSrc:
+            "https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?auto=format&fit=crop&w=400&q=80",
+        },
+        percentageEquity: 1,
+      },
+    ],
+    holdings: [
+      {
+        entity: {
+          name: "Alpha",
+        },
+        percentageEquity: 4,
+        companyValuation: 200_000_000, // 4% of 200M = 8M
+      },
+      {
+        entity: {
+          name: "Beta",
+        },
+        percentageEquity: 3,
+        companyValuation: 200_000_000, // 3% of 200M = 6M
+      },
+      {
+        entity: {
+          name: "Gamma",
+        },
+        percentageEquity: 3,
+        companyValuation: 100_000_000, // 3% of 100M = 3M
+      },
+      {
+        entity: {
+          name: "Delta",
+        },
+        percentageEquity: 1,
+        companyValuation: 100_000_000, // 1% of 100M = 1M
+      },
+    ],
+  },
+  annotations: [
+    { label: "Alice's identity", index: 0 },
+    { label: "Token bio", index: 1 },
+  ],
+  lightFocus: [],
+  cameraFocus: CameraPosition.Normal,
+  showSegmentControl: true,
 };

@@ -168,7 +168,7 @@ const createHighlightStyles = (
     height: region.height,
     borderRadius: radius * 1.1,
     background:
-      "radial-gradient(circle at 50% 40%, rgba(255,255,255,0.65) 0%, rgba(255,255,255,0.15) 55%, rgba(255,255,255,0) 85%)",
+      "radial-gradient(circle at 50% 40%, rgba(255,255,255,0.003) 0%, rgba(255,255,255,0.012) 25%, rgba(255,255,255,0) 15%)",
     opacity: intensity,
     filter: `blur(${(radius * 0.4).toFixed(2)}px)`,
     boxShadow: `0 0 ${blurRadius}px rgba(255,255,255,${(

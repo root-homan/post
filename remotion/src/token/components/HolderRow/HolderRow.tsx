@@ -49,7 +49,8 @@ const holderRowStylesMap = {
     padding: "var(--list-item-padding-vertical) var(--list-item-padding-horizontal)",
     borderRadius: "var(--token-card-border-radius)",
     background: "var(--holder-row-background)",
-    width: "100%", // Adapts to container width
+    width: "100%",
+    height: "136px",
     gap: "var(--holder-row-gap)",
   },
   profile: {

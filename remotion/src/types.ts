@@ -10,6 +10,15 @@ export interface WordGroup {
   end: number;
 }
 
+export interface Grouping {
+  indices: number[];
+  text: string;
+}
+
+export interface GroupingFile {
+  groups: Grouping[];
+}
+
 export interface CaptionData {
   groups: Word[][];
   videoWidth: number;
@@ -17,4 +26,3 @@ export interface CaptionData {
   fps: number;
   durationInFrames: number;
 }
-

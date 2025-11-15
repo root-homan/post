@@ -1,0 +1,17 @@
+{
+  "groups": [
+    {
+      "indices": [0, 1],
+      "text": "Hello everyone"
+    },
+    {
+      "indices": [2, 3, 4, 5],
+      "text": "today we're talking about"
+    },
+    {
+      "indices": [6],
+      "text": "AI"
+    }
+  ],
+  "_comment": "Edit the 'indices' array to change which words are grouped together. The 'text' field is for human readability - the renderer uses the indices to look up word timing from the transcript JSON."
+}

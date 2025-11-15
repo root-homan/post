@@ -83,6 +83,7 @@ def run(args):
 
     # Make API call to OpenAI
     print(f"🤖 post -essay: calling GPT-5 API...")
+    print(f"📤 post -essay: sending {len(srt_content)} characters of SRT content...")
     try:
         essay_content = call_gpt5(
             system_prompt=guidelines_content,
@@ -90,7 +91,8 @@ def run(args):
                 "Please process the following subtitle file (SRT format) according to the format "
                 "specified in your guidelines:\n\n"
                 f"{srt_content}"
-            )
+            ),
+            timeout=180  # 3 minutes for longer transcripts
         )
     except SystemExit:
         env.abort("GPT-5 API call failed")

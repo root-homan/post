@@ -24,12 +24,11 @@ def load_words_from_json(json_path: Path):
     return words
 
 
-def group_words_into_lines(words):
+def generate_groupings_with_gpt(words):
     """
     Group words into caption lines using GPT-5-mini for intelligent semantic grouping.
     
-    Uses GPT-5-mini to understand meaning, powerful words, concept boundaries, and sentence structure
-    to create optimal caption groupings, while respecting timing constraints.
+    Returns a list of grouping objects with 'indices' and 'text' fields.
     """
     if not words:
         return []
@@ -62,61 +61,93 @@ def group_words_into_lines(words):
     user_prompt = f"Please group these transcript words into optimal caption lines, considering both timing and meaning:\n\n{transcript_text}"
     
     print(f"🤖 Calling GPT-5-mini to intelligently group {len(words)} words into caption lines...")
+    print(f"📤 Sending {len(transcript_text)} characters to GPT...")
     
     try:
         response = call_gpt5(
             system_prompt=system_prompt,
             user_prompt=user_prompt,
             response_format={"type": "json_object"},
-            model="gpt-5-mini"
+            model="gpt-5-mini",
+            timeout=180  # 3 minutes for longer transcripts
         )
         
-        # Parse the response
-        response_data = json.loads(response)
+        print(f"📥 Received response, parsing JSON...")
         
-        # Handle different possible JSON structures
+        # Parse the response
+        try:
+            response_data = json.loads(response)
+        except json.JSONDecodeError as e:
+            print(f"❌ Failed to parse GPT response as JSON")
+            print(f"   Parse error: {e}")
+            print(f"   Raw response: {response[:500]}...")
+            raise
+        
+        # Extract groups array
         if "groups" in response_data:
             groupings = response_data["groups"]
         elif "groupings" in response_data:
             groupings = response_data["groupings"]
         elif "lines" in response_data:
             groupings = response_data["lines"]
-        elif isinstance(response_data, list):
-            groupings = response_data
         else:
-            # If we got an unexpected structure, try to find the first array value
-            for value in response_data.values():
-                if isinstance(value, list):
-                    groupings = value
-                    break
-            else:
-                raise ValueError(f"Unexpected response structure: {response_data}")
+            raise ValueError(f"Expected 'groups' key in response, got: {list(response_data.keys())}")
         
-        # Convert groupings (lists of indices) back to lists of word dictionaries
-        lines = []
+        # Handle both new format (with indices/text) and old format (just arrays)
+        result = []
         for group in groupings:
-            if not isinstance(group, list):
-                continue
-            line_words = [words[idx] for idx in group if 0 <= idx < len(words)]
-            if line_words:  # Only add non-empty lines
-                lines.append(line_words)
+            # New format: {"indices": [0, 1], "text": "..."}
+            if isinstance(group, dict) and "indices" in group:
+                indices = [idx for idx in group["indices"] if 0 <= idx < len(words)]
+                text = group.get("text", "")
+                if not text and indices:
+                    # Generate text if not provided
+                    text = ' '.join(words[idx]['word'] for idx in indices)
+                if indices:
+                    result.append({
+                        "indices": indices,
+                        "text": text
+                    })
+            # Old format: [0, 1, 2]
+            elif isinstance(group, list):
+                indices = [idx for idx in group if 0 <= idx < len(words)]
+                if indices:
+                    text = ' '.join(words[idx]['word'] for idx in indices)
+                    result.append({
+                        "indices": indices,
+                        "text": text
+                    })
         
-        print(f"✅ GPT-5-mini grouped words into {len(lines)} caption lines")
-        return lines
+        print(f"✅ GPT-5-mini grouped words into {len(result)} caption lines")
+        
+        # Show a sample of the groupings for verification
+        if result:
+            sample_count = min(3, len(result))
+            print(f"📋 Sample groupings (first {sample_count}):")
+            for i in range(sample_count):
+                group = result[i]
+                print(f"   {i+1}. indices={group['indices']} → \"{group['text']}\"")
+        
+        return result
         
     except (json.JSONDecodeError, ValueError, KeyError) as e:
-        print(f"⚠️  GPT-5-mini grouping failed ({e}), falling back to simple grouping")
+        print(f"⚠️  GPT-5-mini grouping failed")
+        print(f"   Error type: {type(e).__name__}")
+        print(f"   Error message: {e}")
+        print(f"   Falling back to simple grouping...")
         # Fallback: simple grouping by small chunks
-        lines = []
-        current_line = []
-        for word in words:
-            current_line.append(word)
-            if len(current_line) >= 4:  # Simple fallback: 4 words per line
-                lines.append(current_line)
-                current_line = []
-        if current_line:
-            lines.append(current_line)
-        return lines
+        result = []
+        i = 0
+        while i < len(words):
+            chunk_size = min(4, len(words) - i)
+            indices = list(range(i, i + chunk_size))
+            text = ' '.join(words[idx]['word'] for idx in indices)
+            result.append({
+                "indices": indices,
+                "text": text
+            })
+            i += chunk_size
+        return result
 
 
 def get_video_info(video_path: Path):
@@ -172,17 +203,16 @@ def get_video_info(video_path: Path):
         raise RuntimeError(f"Failed to get video info: {e}")
 
 
-def save_grouping(grouping_path: Path, lines):
+def save_grouping(grouping_path: Path, groupings):
     """
     Save the word grouping to a JSON file for reuse.
     
     Args:
         grouping_path: Path to save the grouping JSON
-        lines: List of lists, where each inner list contains word dictionaries
+        groupings: List of dicts with 'indices' and 'text' fields
     """
-    # Convert to a serializable format (just save the word data)
     grouping_data = {
-        "groups": lines
+        "groups": groupings
     }
     with open(grouping_path, 'w', encoding='utf-8') as f:
         json.dump(grouping_data, f, indent=2, ensure_ascii=False)
@@ -194,163 +224,150 @@ def load_grouping(grouping_path: Path):
     Load a previously saved word grouping from JSON.
     
     Returns:
-        List of lists, where each inner list contains word dictionaries
+        List of dicts with 'indices' and 'text' fields
     """
     with open(grouping_path, 'r', encoding='utf-8') as f:
         data = json.load(f)
     return data.get("groups", [])
 
 
-def format_ass_time(seconds: float) -> str:
+def render_captions_with_remotion(
+    video_path: Path,
+    words_json: Path,
+    grouping_json: Path,
+    video_info: dict,
+    output_path: Path
+):
     """
-    Convert seconds to ASS subtitle time format: H:MM:SS.CC
-    where CC is centiseconds (1/100th of a second)
+    Render captions using Remotion as a standalone file.
+    
+    Remotion renders a transparent video with animated captions (drop + karaoke effects).
+    The output can be composited onto the original video in Final Cut Pro or other editors.
     """
-    hours = int(seconds // 3600)
-    minutes = int((seconds % 3600) // 60)
-    secs = int(seconds % 60)
-    centiseconds = int((seconds % 1) * 100)
-    return f"{hours}:{minutes:02d}:{secs:02d}.{centiseconds:02d}"
-
-
-def create_ass_subtitles(lines, video_width: int, video_height: int, ass_path: Path):
-    """
-    Create an ASS subtitle file from word groupings.
+    print(f"🎬 Rendering captions with Remotion...")
     
-    ASS format supports rich styling and positioning.
-    """
-    # Calculate positioning (27% from bottom, matching Remotion)
-    margin_v = int(video_height * 0.27)
+    # Get the remotion directory
+    remotion_dir = Path(__file__).parent.parent / "remotion"
+    if not remotion_dir.exists():
+        raise RuntimeError(f"Remotion directory not found at '{remotion_dir}'")
     
-    # ASS header with styling
-    # Using a large font size and bold weight to match the Remotion styling
-    # PlayResX and PlayResY set the coordinate system for positioning
-    ass_content = f"""[Script Info]
-Title: Captions
-ScriptType: v4.00+
-PlayResX: {video_width}
-PlayResY: {video_height}
-WrapStyle: 0
-
-[V4+ Styles]
-Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Default,Inter,96,&H00FFFFFF,&H000000FF,&H00000000,&H00000000,-1,0,0,0,100,100,0,0,1,0,0,2,10,10,{margin_v},1
-
-[Events]
-Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
-"""
+    # Output will be the caption-only file (absolute path for Remotion)
+    caption_output = output_path.absolute()
     
-    # Add each line as a subtitle event
-    for line_words in lines:
-        if not line_words:
-            continue
-        
-        start_time = line_words[0]['start']
-        end_time = line_words[-1]['end']
-        
-        # Combine words into a single line
-        text = ' '.join(word['word'] for word in line_words)
-        
-        # ASS subtitle event
-        # Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
-        event_line = f"Dialogue: 0,{format_ass_time(start_time)},{format_ass_time(end_time)},Default,,0,0,0,,{text}\n"
-        ass_content += event_line
+    # Calculate duration in frames
+    duration_frames = int(video_info['duration'] * video_info['fps'])
     
-    # Write the ASS file
-    with open(ass_path, 'w', encoding='utf-8') as f:
-        f.write(ass_content)
+    # Load and merge the data in Python (Remotion can't load files directly)
+    words = load_words_from_json(words_json)
+    groupings = load_grouping(grouping_json)
     
-    print(f"📝 Created ASS subtitle file with {len(lines)} caption lines")
-
-
-def burn_captions_with_ffmpeg(video_path: Path, ass_path: Path, output_path: Path):
-    """
-    Use ffmpeg to burn ASS subtitles directly onto the video.
+    # Merge: convert indices to actual word objects
+    merged_groups = []
+    for group in groupings:
+        word_group = [words[idx] for idx in group['indices'] if idx < len(words)]
+        if word_group:
+            merged_groups.append(word_group)
     
-    This is MUCH faster than Remotion because:
-    1. No Node.js startup overhead
-    2. No React rendering
-    3. Native ffmpeg text rendering (hardware accelerated)
-    4. Single-pass encoding
-    """
-    print(f"🔥 Burning captions with ffmpeg (hardware accelerated)...")
+    # Build the remotion render command with merged data
+    # Remotion expects props wrapped in 'inputProps' key
+    props_data = {
+        'inputProps': {
+            'groups': merged_groups,
+            'videoWidth': video_info['width'],
+            'videoHeight': video_info['height'],
+            'fps': video_info['fps'],
+            'durationInFrames': duration_frames
+        }
+    }
     
-    # Use hardware acceleration on macOS (VideoToolbox)
+    print(f"📊 Rendering with:")
+    print(f"   Groups: {len(merged_groups)}")
+    print(f"   Dimensions: {video_info['width']}x{video_info['height']}")
+    print(f"   FPS: {video_info['fps']}")
+    print(f"   Duration: {duration_frames} frames ({video_info['duration']:.2f}s)")
+    if merged_groups:
+        sample = merged_groups[0][:2] if len(merged_groups[0]) > 2 else merged_groups[0]
+        print(f"   Sample words: {[w['word'] for w in sample]}...")
+    
     cmd = [
-        'ffmpeg',
-        '-hide_banner',
-        '-loglevel', 'error',
-        '-nostdin',
-        '-i', str(video_path),
-        '-vf', f"ass={ass_path}",
-        '-c:v', 'h264_videotoolbox',
-        '-q:v', '55',  # Match the quality from tighten.py
-        '-pix_fmt', 'yuv420p',
-        '-c:a', 'copy',  # Copy audio without re-encoding
-        '-movflags', '+faststart',
-        '-y',
-        str(output_path)
+        'npx',
+        'remotion',
+        'render',
+        'CaptionComposition',
+        str(caption_output),
+        '--codec', 'prores',
+        '--prores-profile', '4444',  # ProRes 4444 with alpha channel
+        '--pixel-format', 'yuva444p10le',  # Pixel format with alpha channel
+        '--props',
+        json.dumps(props_data)
     ]
     
     try:
-        result = subprocess.run(cmd, check=True, capture_output=True, text=True)
-        print(f"✅ Captions burned successfully!")
+        print(f"  Running: npx remotion render...")
+        print(f"  Output file: {caption_output}")
+        print()  # Empty line before Remotion output
+        
+        result = subprocess.run(
+            cmd,
+            cwd=remotion_dir,
+            check=True
+        )
+        
+        print()  # Empty line after Remotion output
+        print(f"✅ Remotion render complete")
+        
+        # Check if the file was actually created
+        if not caption_output.exists():
+            print(f"❌ Caption file not found at: {caption_output}")
+            raise RuntimeError(f"Remotion render completed but caption file not found at {caption_output}")
+        
+        print(f"✅ Caption file created: {caption_output.name}")
+        
     except subprocess.CalledProcessError as e:
-        # If hardware encoding fails, fall back to software encoding
-        print(f"⚠️  Hardware encoding failed, falling back to software encoding...")
-        cmd_fallback = [
-            'ffmpeg',
-            '-hide_banner',
-            '-loglevel', 'error',
-            '-nostdin',
-            '-i', str(video_path),
-            '-vf', f"ass={ass_path}",
-            '-c:v', 'libx264',
-            '-preset', 'veryfast',  # Fast encoding
-            '-crf', '18',  # High quality
-            '-pix_fmt', 'yuv420p',
-            '-c:a', 'copy',
-            '-movflags', '+faststart',
-            '-y',
-            str(output_path)
-        ]
-        subprocess.run(cmd_fallback, check=True, capture_output=False)
-        print(f"✅ Captions burned successfully (software encoding)!")
+        print(f"❌ Remotion render failed with exit code {e.returncode}")
+        raise RuntimeError(f"Remotion render failed")
 
 
 def run(args):
     """
-    FAST caption rendering using ffmpeg's native ASS subtitle burning.
+    Render captions using Remotion with drop + karaoke animations.
     
-    This is 10-100x faster than Remotion because it:
-    - Uses native ffmpeg text rendering (no Node.js/React overhead)
-    - Hardware accelerated encoding
-    - Single-pass processing
+    Uses Remotion to render animated captions with:
+    - Drop animation (6px, 400ms)
+    - Karaoke sweep effect (moving light across words)
     
-    Trade-offs:
-    - No fancy karaoke sweep animation
-    - No drop animation
-    - But still looks great and renders in seconds instead of minutes!
+    Outputs a standalone .mov file with transparent background for compositing in video editors.
     
     Dependencies:
-        - A tightened video `<title>-<take_id>-rough-tight.mp4` must be present in the working directory.
-        - A matching word timestamps file `<title>-<take_id>-rough-tight.json` (same basename as the video) must exist.
-        - ffmpeg must be installed and available in PATH.
+        - A draft video `<title>-<take_id>-draft.mp4` must be present (or specify as argument)
+        - A matching word timestamps file `<title>-<take_id>-draft.json` from -transcribe must exist
+        - Remotion must be set up in the remotion/ directory
+        - ffmpeg must be installed and available in PATH
+    
     Failure behaviour:
-        - Aborts when either artefact is missing, when multiple candidates exist, or when the basenames differ.
-        - Prompts before overwriting `<title>-<take_id>-rough-tight-captions.mp4` unless `--yes` is provided.
+        - Aborts when transcript JSON is missing
+        - Prompts before overwriting output unless `--yes` is provided
+        - Prompts whether to regenerate grouping if it exists
+    
     Output:
-        - Produces `<title>-<take_id>-rough-tight-captions.mp4`, augmenting the tightened video with burnt-in captions.
-        - Also produces `<title>-<take_id>-rough-tight-grouping.json` containing the word grouping for reuse.
-        - Also produces `<title>-<take_id>-rough-tight.ass` containing the ASS subtitle file.
+        - Produces `<title>-<take_id>-draft-captions.mov` with animated captions (transparent background)
+        - Also produces `<title>-<take_id>-draft-grouping.json` for manual tweaking
+        - The .mov file can be composited onto the original video in Final Cut Pro or other editors
+    
     Grouping workflow:
-        - If a grouping file exists, prompts whether to reuse it (unless `--yes` is provided, which auto-reuses).
-        - This allows regenerating captions with different styling without re-running GPT grouping.
-        - To force new grouping: delete the grouping file or respond 'n' to the prompt.
+        - If grouping file exists, prompts whether to regenerate (unless `--yes` auto-reuses)
+        - You can manually edit the grouping JSON to adjust which words are grouped together
+        - The text field is for human readability - Remotion uses the indices field
+        - Just re-run the command after editing to re-render with new groupings
     """
     parser = build_cli_parser(
         stage="captions",
-        summary="Render the tightened take with burnt-in captions (FAST version using ffmpeg).",
+        summary="Render captions with Remotion (drop + karaoke animations).",
+    )
+    parser.add_argument(
+        'video_file',
+        nargs='?',
+        help='Video file to add captions to (if not provided, looks for *-draft.mp4)'
     )
     parsed = parser.parse_args(args)
 
@@ -360,33 +377,39 @@ def run(args):
         auto_confirm=parsed.yes,
     )
 
-    tightened_video = env.expect_single_file("*-rough-tight.mp4", "tightened video")
-    json_file = env.expect_single_file("*-rough-tight.json", "word timestamps file required for captions")
+    # Find the video file
+    if parsed.video_file:
+        draft_video = Path(parsed.video_file)
+        if not draft_video.exists():
+            env.abort(f"Specified video file not found: '{draft_video}'")
+    else:
+        draft_video = env.expect_single_file("*-draft.mp4", "draft video")
 
-    if tightened_video.stem != json_file.stem:
+    # Check for transcript JSON
+    json_file = draft_video.with_suffix('.json')
+    if not json_file.exists():
         env.abort(
-            "Word timestamps file and video do not share the same basename. "
-            f"Expected '{tightened_video.stem}', found '{json_file.stem}'."
+            f"Transcript JSON not found: '{json_file.name}'\n"
+            f"Please run 'post -transcribe' first to generate word-level timestamps."
         )
 
-    captions_video = tightened_video.with_name(f"{tightened_video.stem}-captions.mp4")
-    grouping_file = tightened_video.with_name(f"{tightened_video.stem}-grouping.json")
-    ass_file = tightened_video.with_name(f"{tightened_video.stem}.ass")
+    captions_video = draft_video.with_name(f"{draft_video.stem}-captions.mov")
+    grouping_file = draft_video.with_name(f"{draft_video.stem}-grouping.json")
 
     env.ensure_output_path(captions_video)
     env.announce_checks_passed(
-        f"All safety checks passed. Ready to render '{captions_video.name}' using '{tightened_video.name}' and '{json_file.name}'."
+        f"All safety checks passed. Ready to render '{captions_video.name}' using '{draft_video.name}' and '{json_file.name}'."
     )
 
     # Get video info (dimensions, fps, duration)
     try:
-        video_info = get_video_info(tightened_video)
+        video_info = get_video_info(draft_video)
         print(f"📐 Video info: {video_info['width']}x{video_info['height']}, {video_info['fps']:.2f} fps, {video_info['duration']:.2f}s")
     except Exception as e:
         env.abort(f"Failed to get video info: {e}")
 
     # Step 1: Handle word grouping
-    lines = None
+    groupings = None
     if grouping_file.exists():
         print(f"📋 Found existing grouping file '{grouping_file.name}'")
         if env.auto_confirm:
@@ -399,34 +422,34 @@ def run(args):
         if use_existing:
             print(f"📂 Loading existing grouping from '{grouping_file.name}'...")
             try:
-                lines = load_grouping(grouping_file)
-                print(f"✅ Loaded {len(lines)} caption groups from saved grouping")
+                groupings = load_grouping(grouping_file)
+                print(f"✅ Loaded {len(groupings)} caption groups from saved grouping")
             except Exception as e:
                 print(f"⚠️  Failed to load grouping: {e}")
                 print("Will generate new grouping instead...")
-                lines = None
+                groupings = None
         else:
             print("🔄 Will generate new grouping...")
     
-    # If we don't have lines yet, generate them
-    if lines is None:
+    # If we don't have groupings yet, generate them
+    if groupings is None:
         print(f"🤖 Generating new word grouping...")
         words = load_words_from_json(json_file)
-        lines = group_words_into_lines(words)
+        groupings = generate_groupings_with_gpt(words)
         # Save the grouping for future reuse
-        save_grouping(grouping_file, lines)
+        save_grouping(grouping_file, groupings)
 
-    # Step 2: Create ASS subtitle file
-    print(f"📝 Creating ASS subtitle file...")
+    # Step 2: Render with Remotion and composite
     try:
-        create_ass_subtitles(lines, video_info['width'], video_info['height'], ass_file)
+        render_captions_with_remotion(
+            draft_video,
+            json_file,
+            grouping_file,
+            video_info,
+            captions_video
+        )
+        print(f"✅ post -captions: successfully created '{captions_video.name}'")
+        print(f"   Transparent caption file ready for compositing in Final Cut Pro!")
     except Exception as e:
-        env.abort(f"Failed to create ASS subtitles: {e}")
-
-    # Step 3: Burn captions with ffmpeg (FAST!)
-    try:
-        burn_captions_with_ffmpeg(tightened_video, ass_file, captions_video)
-        print(f"✅ post -captions: successfully created '{captions_video.name}' with captions!")
-    except Exception as e:
-        env.abort(f"Failed to burn captions: {e}")
+        env.abort(f"Failed to render captions: {e}")
 

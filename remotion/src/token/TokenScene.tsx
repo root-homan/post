@@ -13,6 +13,7 @@ export const TokenScene: React.FC<TokenSceneInput> = ({
   defaultSegment,
   isExpanded,
   showSegmentControl = true,
+  segmentAnimation,
 }) => {
   const effectiveToken = resolveToken(token);
   const activeSegment = resolveSegment(currentSegment, defaultSegment);
@@ -57,6 +58,7 @@ export const TokenScene: React.FC<TokenSceneInput> = ({
             glowProgress={tokenAppearanceProgress}
             expansionProgress={expansionProgress}
             showSegmentControl={showSegmentControl}
+            segmentAnimation={segmentAnimation}
           />
         ) : null}
       </div>

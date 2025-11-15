@@ -4,6 +4,7 @@ Your task is to group words semantically and meaningfully, while respecting timi
 
 - **Group by meaning**: Words that belong to the same concept or phrase should be grouped together.
 - **Powerful words stand alone**: When you encounter particularly impactful, important, or emphatic words, let them appear alone for maximum effect - BUT only if there's enough time to render them separately.
+- **Expand phrase end time so that there is NO gap between sentences!**. there should always be some captions on screen.
 - **Respect timing constraints**: If words come very close together (small gaps like < 0.2s between words), group them together even if they might semantically work alone. We need enough time to render each caption line. Words that are rapid-fire should be grouped together.
 - **Respect concept boundaries**: Don't group across different concepts, ideas, or beats in the speech.
 - **Respect sentence boundaries**: Never put the end of one sentence together with the beginning of the next sentence.
@@ -20,7 +21,10 @@ You will receive a numbered list of words with their timestamps. Each word shows
 - Duration of the word
 - Gap to the next word (time between this word ending and next word starting)
 
-Return your grouping as a JSON array of arrays, where each inner array contains the word indices that should appear together as one caption line.
+Return your grouping as a JSON object with a "groups" key containing an array of group objects. Each group object should have:
+
+- "indices": array of word indices that belong together
+- "text": the combined text of those words (for human readability)
 
 Example input:
 0: 'Hello' [0.50s - 0.80s, duration: 0.30s, gap to next: 0.05s]
@@ -32,7 +36,13 @@ Example input:
 6: 'AI' [4.10s - 4.60s, duration: 0.50s]
 
 Example output:
-{"groups": [[0, 1], [2, 3, 4, 5], [6]]}
+{
+"groups": [
+{"indices": [0, 1], "text": "Hello everyone"},
+{"indices": [2, 3, 4, 5], "text": "today we're talking about"},
+{"indices": [6], "text": "AI"}
+]
+}
 
 Reasoning:
 
@@ -40,4 +50,4 @@ Reasoning:
 - Words 2-5: "today we're talking about" - all rapid-fire with small gaps, form one phrase
 - Word 6: "AI" - stands alone, large gap before it (0.80s), impactful word, has time to render separately
 
-Return ONLY valid JSON with a "groups" key containing the array of arrays.
+Return ONLY valid JSON with this exact structure. The "text" field should contain the actual words from the transcript concatenated with spaces.

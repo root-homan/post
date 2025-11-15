@@ -23,6 +23,7 @@ export enum CameraPosition {
 
 export interface Entity {
   name: string;
+  username?: string;
   profileSrc?: string;
   bio?: string;
 }
@@ -35,7 +36,7 @@ export interface Holder {
 export interface Holding {
   entity: Entity;
   percentageEquity: number;
-  valuation: number;
+  companyValuation: number;
 }
 
 export interface Token {
@@ -55,6 +56,12 @@ export type LightFocus = TokenComponent[];
 
 export type CameraFocus = CameraPosition | TokenComponent;
 
+export interface SegmentAnimation {
+  from: Segment;
+  to: Segment;
+  progress: number;
+}
+
 export interface TokenSceneInput {
   token: Token | null;
   isExpanded: boolean;
@@ -64,7 +71,13 @@ export interface TokenSceneInput {
   lightFocus?: LightFocus;
   cameraFocus?: CameraFocus;
   showSegmentControl?: boolean;
+  segmentAnimation?: SegmentAnimation;
 }
+
+export type PersonalTokenSceneInput = Omit<
+  TokenSceneInput,
+  "isExpanded" | "currentSegment" | "defaultSegment" | "segmentAnimation"
+>;
 
 export interface CompanySceneInput
   extends Omit<

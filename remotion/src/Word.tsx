@@ -10,10 +10,11 @@ interface WordProps {
   lineEndTime: number; // End time of the entire line in seconds
 }
 
-// Opacity constants
-const ACTIVE_OPACITY = 1.0; // Opacity when light is on the word
-const INACTIVE_OPACITY = 0.675; // Opacity for unlit words
+// Light effect constants - three-stage softbox style
 const LIGHT_WIDTH = 0.7; // How wide the light beam is (0-1, proportion of line width)
+const UNREACHED_OPACITY = 0.35; // Opacity for words not yet reached - subtle gray
+const ACTIVE_OPACITY = 1.0; // Full opacity when currently active
+const REACHED_OPACITY = 1.0; // Opacity for already-reached words - same as active
 
 export const Word: React.FC<WordProps> = ({
   word,
@@ -25,9 +26,12 @@ export const Word: React.FC<WordProps> = ({
   const frame = useCurrentFrame();
   const { fps } = useVideoConfig();
 
+  // Remove punctuation and convert to lowercase
+  const displayText = word.word.replace(/[^\w\s]|_/g, "").toLowerCase();
+
   if (!isKaraokeEnabled) {
     // No karaoke - always full opacity
-    return <span style={styles.word}>{word.word}</span>;
+    return <span style={styles.word}>{displayText}</span>;
   }
 
   // Calculate the current time position of the light sweep (0 to 1 across the line)
@@ -48,22 +52,48 @@ export const Word: React.FC<WordProps> = ({
     { extrapolateRight: "clamp" }
   );
 
-  // Calculate distance from light center to this word's position
-  const distanceFromLight = Math.abs(wordPositionRatio - lightPosition);
+  // Determine the word's state based on light position
+  const distanceFromLight = wordPositionRatio - lightPosition;
 
-  // Calculate opacity based on distance from light
-  // Words close to the light are bright, words far away are dim
-  const opacity = interpolate(
-    distanceFromLight,
-    [0, LIGHT_WIDTH],
-    [ACTIVE_OPACITY, INACTIVE_OPACITY],
-    {
-      extrapolateLeft: "clamp",
-      extrapolateRight: "clamp",
+  let opacity: number;
+
+  if (distanceFromLight < -LIGHT_WIDTH) {
+    // Word is beyond the light - already reached
+    opacity = REACHED_OPACITY;
+  } else if (Math.abs(distanceFromLight) <= LIGHT_WIDTH) {
+    // Word is in the light beam - interpolate between states
+    if (distanceFromLight < 0) {
+      // Light has partially passed - transitioning to "reached"
+      opacity = interpolate(
+        distanceFromLight,
+        [-LIGHT_WIDTH, 0],
+        [REACHED_OPACITY, ACTIVE_OPACITY],
+        { extrapolateRight: "clamp" }
+      );
+    } else {
+      // Light is approaching - transitioning from "unreached"
+      opacity = interpolate(
+        distanceFromLight,
+        [0, LIGHT_WIDTH],
+        [ACTIVE_OPACITY, UNREACHED_OPACITY],
+        { extrapolateLeft: "clamp" }
+      );
     }
-  );
+  } else {
+    // Word hasn't been reached yet
+    opacity = UNREACHED_OPACITY;
+  }
 
-  return <span style={{ ...styles.word, opacity }}>{word.word}</span>;
+  return (
+    <span
+      style={{
+        ...styles.word,
+        opacity,
+      }}
+    >
+      {displayText}
+    </span>
+  );
 };
 
 // Styles
